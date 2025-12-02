@@ -42,11 +42,13 @@ async fn main() {
     let cors = CorsLayer::new()
         .allow_origin([
             "https://fanclash.netlify.app".parse::<HeaderValue>().unwrap(),
+            "https://fanclash-app.netlify.app".parse::<HeaderValue>().unwrap(),
             "http://10.145.30.38:3001".parse::<HeaderValue>().unwrap(),
             "http://192.168.56.1:3001".parse::<HeaderValue>().unwrap(),
             "http://localhost:3000".parse::<HeaderValue>().unwrap(),
             "http://localhost:3001".parse::<HeaderValue>().unwrap(),
             "http://172.19.30.38:3001".parse::<HeaderValue>().unwrap(),
+
         ])
         .allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE, Method::OPTIONS])
         .allow_headers(Any)
@@ -67,4 +69,5 @@ async fn main() {
 
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();
+    println!("Capiyo")
 }
