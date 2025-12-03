@@ -10,17 +10,18 @@ use std::path::Path as StdPath;
 use tokio::fs;
 use serde_json::json;
 use mongodb::bson::{doc, oid::ObjectId};
-use mongodb::{Database, Collection};
+use mongodb::Collection;
 use futures_util::TryStreamExt;
 
 use crate::errors::{AppError, Result};
 use crate::models::post::{Post, PostResponse};
+use crate::state::AppState;
 
 const MAX_FILE_SIZE: u64 = 10 * 1024 * 1024; // 10MB
 const ALLOWED_EXTENSIONS: [&str; 4] = ["jpg", "jpeg", "png", "gif"];
 
 pub async fn create_post(
-    State(db): State<Database>,
+    State(state): State<AppState>,
     mut multipart: Multipart,
 ) -> Result<Json<serde_json::Value>> {
     let mut caption = String::new();
@@ -90,7 +91,7 @@ pub async fn create_post(
     fs::write(&file_path, &image_data).await.map_err(AppError::Io)?;
 
     // Create post in MongoDB
-    let collection: Collection<Post> = db.collection("posts");
+    let collection: Collection<Post> = state.db.collection("posts");
 
     let post = Post {
         _id: Some(ObjectId::new()),
@@ -99,12 +100,11 @@ pub async fn create_post(
         caption: caption.clone(),
         image_url: image_url.clone(),
         image_path: file_path.clone(),
-        created_at: Utc::now(),  // REMOVE the `Some()` wrapper
+        created_at: Utc::now(),
         updated_at: Utc::now(),
     };
 
-    // FIXED: Use ? operator or map to AppError::MongoDB
-    collection.insert_one(&post).await?;  // Auto-converts to AppError::MongoDB
+    collection.insert_one(&post).await?;
 
     Ok(Json(json!({
         "success": true,
@@ -118,16 +118,14 @@ pub async fn create_post(
     })))
 }
 
-
 pub async fn get_posts(
-    State(db): State<Database>
+    State(state): State<AppState>
 ) -> Result<Json<serde_json::Value>> {
-    let collection: Collection<Post> = db.collection("posts");
+    let collection: Collection<Post> = state.db.collection("posts");
 
     let cursor = collection.find(doc! {}).await?;
     let mut posts: Vec<Post> = cursor.try_collect().await?;
 
-    // SIMPLIFIED: No need for pattern matching
     posts.sort_by(|a, b| b.created_at.cmp(&a.created_at));
 
     let post_responses: Vec<PostResponse> = posts.into_iter().map(PostResponse::from).collect();
@@ -138,20 +136,17 @@ pub async fn get_posts(
     })))
 }
 
-
-
 pub async fn get_posts_by_user(
-    State(db): State<Database>,
+    State(state): State<AppState>,
     Path(user_id): Path<String>,
 ) -> Result<Json<serde_json::Value>> {
-    let collection: Collection<Post> = db.collection("posts");
+    let collection: Collection<Post> = state.db.collection("posts");
 
     let filter = doc! { "user_id": &user_id };
 
     let cursor = collection.find(filter).await?;
     let mut posts: Vec<Post> = cursor.try_collect().await?;
 
-    // Sort by created_at descending (SIMPLE VERSION - no Option handling needed)
     posts.sort_by(|a, b| b.created_at.cmp(&a.created_at));
 
     let post_responses: Vec<PostResponse> = posts.into_iter().map(PostResponse::from).collect();
@@ -164,10 +159,10 @@ pub async fn get_posts_by_user(
 }
 
 pub async fn delete_post(
-    State(db): State<Database>,
+    State(state): State<AppState>,
     Path(post_id): Path<String>,
 ) -> Result<Json<serde_json::Value>> {
-    let collection: Collection<Post> = db.collection("posts");
+    let collection: Collection<Post> = state.db.collection("posts");
 
     let object_id = ObjectId::parse_str(&post_id)
         .map_err(|_| AppError::PostNotFound)?;
@@ -175,7 +170,7 @@ pub async fn delete_post(
     let filter = doc! { "_id": object_id };
 
     // First get the post to find the image path
-    let post = collection.find_one(filter.clone()).await?;  // FIXED: Use ?
+    let post = collection.find_one(filter.clone()).await?;
 
     match post {
         Some(post) => {
@@ -185,7 +180,7 @@ pub async fn delete_post(
             }
 
             // Delete from MongoDB
-            collection.delete_one(filter).await?;  // FIXED: Use ?
+            collection.delete_one(filter).await?;
 
             Ok(Json(json!({
                 "success": true,
@@ -197,7 +192,7 @@ pub async fn delete_post(
 }
 
 pub async fn update_post_caption(
-    State(db): State<Database>,
+    State(state): State<AppState>,
     Path(post_id): Path<String>,
     axum::extract::Json(payload): axum::extract::Json<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>> {
@@ -205,7 +200,7 @@ pub async fn update_post_caption(
         .and_then(|c| c.as_str())
         .ok_or(AppError::InvalidUserData)?;
 
-    let collection: Collection<Post> = db.collection("posts");
+    let collection: Collection<Post> = state.db.collection("posts");
 
     let object_id = ObjectId::parse_str(&post_id)
         .map_err(|_| AppError::PostNotFound)?;
@@ -218,7 +213,6 @@ pub async fn update_post_caption(
         }
     };
 
-    // FIXED: Use ? operator
     let result = collection.update_one(filter, update).await?;
 
     if result.modified_count == 0 {
@@ -231,13 +225,11 @@ pub async fn update_post_caption(
     })))
 }
 
-
-
 pub async fn get_post_by_id(
-    State(db): State<Database>,
+    State(state): State<AppState>,
     Path(post_id): Path<String>,
 ) -> Result<Json<serde_json::Value>> {
-    let collection: Collection<Post> = db.collection("posts");
+    let collection: Collection<Post> = state.db.collection("posts");
 
     let object_id = ObjectId::parse_str(&post_id)
         .map_err(|_| AppError::PostNotFound)?;

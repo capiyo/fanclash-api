@@ -1,20 +1,21 @@
 use axum::{
-    routing::{get, post, delete, put},
+    routing::{get, post, put, delete},
     Router,
 };
-use mongodb::Database;
 
-pub fn routes() -> Router<Database> {
+use crate::state::AppState;
+
+pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/", get(crate::handlers::posts::get_posts))
         .route("/", post(crate::handlers::posts::create_post))
         .route("/:id", get(crate::handlers::posts::get_post_by_id))
-        .route("/user/:user_id", get(crate::handlers::posts::get_posts_by_user))
+        .route("/:id", put(crate::handlers::posts::update_post_caption))
         .route("/:id", delete(crate::handlers::posts::delete_post))
-        .route("/:id/caption", put(crate::handlers::posts::update_post_caption))
+        .route("/user/:user_id", get(crate::handlers::posts::get_posts_by_user))
 }
 
-pub fn upload_routes() -> Router<Database> {
+pub fn upload_routes() -> Router<AppState> {
     Router::new()
-        .route("/uploads/:filename", get(crate::handlers::upload::serve_image))
+        .route("/upload", post(crate::handlers::posts::create_post))
 }

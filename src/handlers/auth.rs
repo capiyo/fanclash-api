@@ -5,20 +5,21 @@ use axum::{
 use bcrypt::{hash, verify, DEFAULT_COST};
 use jsonwebtoken::{encode, EncodingKey, Header};
 use chrono::Utc;
-use mongodb::{Database, Collection};
+use mongodb::Collection;
 use mongodb::bson::{doc, oid::ObjectId};
 use futures_util::TryStreamExt;
 
+use crate::state::AppState;
 use crate::errors::{AppError, Result};
 use crate::models::user::{
     User, CreateUser, LoginUser, LoginWithPhone, UserResponse, AuthResponse, Claims
 };
 
 pub async fn register(
-    State(db): State<Database>,
+    State(state): State<AppState>,
     Json(payload): Json<CreateUser>,
 ) -> Result<Json<AuthResponse>> {
-    let collection: Collection<User> = db.collection("users");
+    let collection: Collection<User> = state.db.collection("users");
 
     // Check if user exists by username or phone
     let filter = doc! {
@@ -31,7 +32,7 @@ pub async fn register(
     let existing_user = collection.find_one(filter).await?;
 
     if existing_user.is_some() {
-        return Err(AppError::InvalidUserData); // Or create a new error variant
+        return Err(AppError::InvalidUserData);
     }
 
     // Hash password
@@ -45,7 +46,7 @@ pub async fn register(
         phone: payload.phone.clone(),
         password_hash: password_hash.clone(),
         balance: 0.0,
-        created_at: Utc::now(),  // REMOVE the `Some()` wrapper
+        created_at: Utc::now(),
         updated_at: Utc::now(),
     };
 
@@ -87,10 +88,10 @@ pub async fn register(
 }
 
 pub async fn login(
-    State(db): State<Database>,
+    State(state): State<AppState>,
     Json(payload): Json<LoginUser>,
 ) -> Result<Json<AuthResponse>> {
-    let collection: Collection<User> = db.collection("users");
+    let collection: Collection<User> = state.db.collection("users");
 
     // Find user by username
     let filter = doc! { "username": &payload.username };
@@ -137,10 +138,10 @@ pub async fn login(
 }
 
 pub async fn login_with_phone(
-    State(db): State<Database>,
+    State(state): State<AppState>,
     Json(payload): Json<LoginWithPhone>,
 ) -> Result<Json<AuthResponse>> {
-    let collection: Collection<User> = db.collection("users");
+    let collection: Collection<User> = state.db.collection("users");
 
     // Find user by phone
     let filter = doc! { "phone": &payload.phone };
@@ -184,4 +185,50 @@ pub async fn login_with_phone(
         user: user_response,
         token,
     }))
+}
+
+// Additional auth handlers you might want:
+
+pub async fn get_user_profile(
+    State(state): State<AppState>,
+    axum::extract::Path(user_id): axum::extract::Path<String>,
+) -> Result<Json<UserResponse>> {
+    let collection: Collection<User> = state.db.collection("users");
+
+    let object_id = ObjectId::parse_str(&user_id)
+        .map_err(|_| AppError::invalid_data("Invalid user ID"))?;
+
+    let filter = doc! { "_id": object_id };
+    let user = collection.find_one(filter).await?
+        .ok_or(AppError::DocumentNotFound)?;
+
+    let user_response = UserResponse {
+        id: user._id.unwrap().to_hex(),
+        username: user.username,
+        phone: user.phone,
+        balance: user.balance,
+    };
+
+    Ok(Json(user_response))
+}
+
+
+pub async fn get_all_users(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<UserResponse>>> {
+    let collection: Collection<User> = state.db.collection("users");
+
+    let cursor = collection.find(doc! {}).await?;
+    let users: Vec<User> = cursor.try_collect().await?;
+
+    let user_responses: Vec<UserResponse> = users.into_iter()
+        .map(|user| UserResponse {
+            id: user._id.unwrap().to_hex(),
+            username: user.username,
+            phone: user.phone,
+            balance: user.balance,
+        })
+        .collect();
+
+    Ok(Json(user_responses))
 }

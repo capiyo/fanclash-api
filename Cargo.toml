@@ -28,7 +28,11 @@ futures-util = "0.3"
 thiserror = "1.0"
 anyhow = "1.0.100"
 
-# MongoDB dependencies
+
+dotenv = "0.15"
+reqwest = { version = "0.11", features = ["json"] }
+base64 = "0.21"
+
 serde_with = "3.8"
 mongodb = "3.4.1"
 bson = { version = "2.8", features = ["chrono-0_4"] }

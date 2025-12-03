@@ -1,15 +1,16 @@
 use tracing_subscriber;
 use axum::{
-    extract::State,
-    http::{HeaderMap, StatusCode},
+    http::{StatusCode, HeaderValue},
     response::Json,
     routing::{get, post},
-    Router, http::{Method, HeaderValue},
+    Router,
+    http::Method,
 };
-use axum_extra::extract::Multipart;
 use tower_http::cors::{Any, CorsLayer};
-
 use std::net::SocketAddr;
+use std::sync::Arc;
+use axum::extract::State;
+use dotenvy::dotenv;
 
 mod routes;
 mod models;
@@ -18,27 +19,81 @@ mod middleware;
 mod database;
 mod errors;
 mod dumper;
+mod config;
+mod services;
+mod state;
 
-use routes::{auth, games, posts, pledges};
 use database::connection::get_db_client;
+use state::AppState;
 
 #[tokio::main]
 async fn main() {
-    // Load environment variables
     dotenvy::dotenv().ok();
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::INFO)
+        .init();
 
-    // Initialize tracing
-    tracing_subscriber::fmt::init();
+    create_directories().await;
 
-    // Create uploads directory if it doesn't exist
-    if let Err(e) = tokio::fs::create_dir_all("uploads/images").await {
-        tracing::warn!("Failed to create uploads directory: {}", e);
+    let db = get_db_client().await;
+    let app_state = initialize_app_state(db).await;
+
+    let app = build_router(app_state).await;
+    start_server(app).await;
+}
+
+async fn create_directories() {
+    let dirs = ["uploads/images", "uploads/mpesa_receipts"];
+    for dir in dirs {
+        if let Err(e) = tokio::fs::create_dir_all(dir).await {
+            tracing::warn!("Failed to create {}: {}", dir, e);
+        }
+    }
+}
+
+
+async fn initialize_app_state(db: mongodb::Database) -> AppState {
+    let mut app_state = AppState::new(db);
+
+    tracing::info!("🔧 Attempting to initialize M-Pesa service...");
+
+    // Try to load AppConfig (not MpesaConfig)
+    let config_result = std::panic::catch_unwind(|| {
+        config::AppConfig::from_env()  // Changed from MpesaConfig to AppConfig
+    });
+
+    match config_result {
+        Ok(config) => {
+            tracing::info!("✅ App config loaded successfully");
+            tracing::info!("📱 Short code: {}", config.mpesa_short_code);  // Changed from short_code
+            tracing::info!("🌐 Environment: {}", config.mpesa_environment);  // Changed from environment
+
+            // Create M-Pesa service
+            let mpesa_service = Arc::new(services::mpesa_service::MpesaService::new(config));
+
+            // Try to get access token to verify credentials
+            match mpesa_service.get_access_token().await {
+                Ok(token) => {
+                    tracing::info!("✅ M-Pesa access token obtained");
+                    tracing::debug!("Token (first 20 chars): {}", &token[0..20.min(token.len())]);
+                    app_state = app_state.with_mpesa(mpesa_service);
+                    tracing::info!("✅ M-Pesa service initialized and ready");
+                }
+                Err(e) => {
+                    tracing::error!("❌ Failed to get M-Pesa access token: {}", e);
+                    tracing::warn!("M-Pesa service will be disabled");
+                }
+            }
+        }
+        Err(_) => {
+            tracing::error!("❌ Failed to load App config (panic caught)");
+            tracing::warn!("M-Pesa service will be disabled");
+        }
     }
 
-    // Initialize MongoDB database connection
-    let db = get_db_client().await;  // This should return Database, not Client
-
-    // CORS configuration - ALLOW MULTIPLE ORIGINS
+    app_state
+}
+async fn build_router(app_state: AppState) -> Router {
     let cors = CorsLayer::new()
         .allow_origin([
             "https://fanclash.netlify.app".parse::<HeaderValue>().unwrap(),
@@ -48,26 +103,65 @@ async fn main() {
             "http://localhost:3000".parse::<HeaderValue>().unwrap(),
             "http://localhost:3001".parse::<HeaderValue>().unwrap(),
             "http://172.19.30.38:3001".parse::<HeaderValue>().unwrap(),
-
         ])
         .allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE, Method::OPTIONS])
         .allow_headers(Any)
         .allow_credentials(false);
 
-    let app = Router::new()
-        .route("/", get(|| async { "Peer-to-Peer Betting API" }))
-        .nest("/api/auth", auth::routes())
-        .nest("/api/games", games::routes())
-        .nest("/api/posts", posts::routes())
-        .nest("/api/pledges", pledges::routes())
-        .nest("/api", posts::upload_routes())
+    Router::new()
+        .route("/", get(root_handler))
+        .route("/health", get(health_check))
+        .route("/api/health", get(api_health_check))
+        .nest("/api/auth", routes::auth::routes())
+        .nest("/api/games", routes::games::routes())
+        .nest("/api/posts", routes::posts::routes())
+        .nest("/api/pledges", routes::pledges::routes())
+        .nest("/api/mpesa", routes::mpesa::mpesa_routes())
+        .nest("/api", routes::posts::upload_routes())
         .layer(cors)
-        .with_state(db);  // Pass the Database
+        .with_state(app_state)
+}
 
-    let addr = SocketAddr::from(([0, 0, 0, 0], 3000));
-    tracing::info!("Server running on {}", addr);
+async fn start_server(app: Router) {
+    let port = std::env::var("PORT").unwrap_or_else(|_| "3000".to_string());
+    let addr = SocketAddr::from(([0, 0, 0, 0], port.parse().unwrap_or(3000)));
 
-    let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-    axum::serve(listener, app).await.unwrap();
-    println!("Capiyo")
+    tracing::info!("🚀 Server starting on {}", addr);
+
+    match tokio::net::TcpListener::bind(addr).await {
+        Ok(listener) => {
+            axum::serve(listener, app).await.unwrap();
+        }
+        Err(e) => {
+            tracing::error!("Failed to bind to {}: {}", addr, e);
+            std::process::exit(1);
+        }
+    }
+}
+
+async fn root_handler() -> &'static str {
+    "🚀 Peer-to-Peer Betting API"
+}
+
+async fn health_check() -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "status": "healthy",
+        "timestamp": chrono::Utc::now().to_rfc3339(),
+    }))
+}
+
+async fn api_health_check(State(state): State<AppState>) -> Json<serde_json::Value> {
+    use mongodb::bson::doc;
+
+    let db_status = match state.db.run_command(doc! {"ping": 1}).await {
+        Ok(_) => "connected",
+        Err(_) => "disconnected",
+    };
+
+    Json(serde_json::json!({
+        "status": "healthy",
+        "database": db_status,
+        "mpesa": state.mpesa_service.is_some(),
+        "timestamp": chrono::Utc::now().to_rfc3339(),
+    }))
 }

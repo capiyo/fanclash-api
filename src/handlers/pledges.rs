@@ -4,28 +4,29 @@ use axum::{
 };
 use serde::Deserialize;
 use chrono::Utc;
-use mongodb::{Database, Collection};
-use mongodb::bson::{doc, oid::ObjectId};
+use mongodb::{Collection, bson::{doc, oid::ObjectId}};
 use futures_util::TryStreamExt;
 
-use crate::errors::{AppError, Result};
-use crate::models::pledges::{Pledge, CreatePledge, PledgeQuery};
+use crate::{
+    state::AppState,
+    errors::{AppError, Result},
+    models::pledges::{Pledge, CreatePledge, PledgeQuery},
+};
 
 #[derive(Debug, Deserialize)]
 pub struct PledgeStatsQuery {
     pub home_team: Option<String>,
     pub away_team: Option<String>,
-    pub starter_id: Option<String>, // Added starter_id to stats query
 }
 
 // Get all pledges with optional filtering
 pub async fn get_pledges(
-    State(db): State<Database>,
+    State(state): State<AppState>,
     Query(query): Query<PledgeQuery>,
 ) -> Result<Json<Vec<Pledge>>> {
     println!("🔍 GET /api/pledges called - Starting MongoDB query...");
 
-    let collection: Collection<Pledge> = db.collection("pledges");
+    let collection: Collection<Pledge> = state.db.collection("pledges");
 
     // Build MongoDB filter
     let mut filter = doc! {};
@@ -46,14 +47,10 @@ pub async fn get_pledges(
         filter.insert("away_team", away_team);
     }
 
-    if let Some(starter_id) = &query.starter_id {
-        filter.insert("starter_id", starter_id);
-    }
-
     let cursor = collection.find(filter).await?;
     let mut pledges: Vec<Pledge> = cursor.try_collect().await?;
 
-    // FIXED: Sort by created_at descending (SIMPLE VERSION)
+    // Sort by created_at descending
     pledges.sort_by(|a, b| b.created_at.cmp(&a.created_at));
 
     println!("✅ Successfully fetched {} pledges", pledges.len());
@@ -62,13 +59,13 @@ pub async fn get_pledges(
 
 // Create a new pledge
 pub async fn create_pledge(
-    State(db): State<Database>,
+    State(state): State<AppState>,
     Json(payload): Json<CreatePledge>,
 ) -> Result<Json<Pledge>> {
     println!("🎯 Creating new pledge for user: {}", payload.username);
 
     // Validate required fields
-    if payload.username.is_empty() || payload.phone.is_empty() || payload.selection.is_empty() || payload.starter_id.is_empty() {
+    if payload.username.is_empty() || payload.phone.is_empty() || payload.selection.is_empty() {
         return Err(AppError::InvalidUserData);
     }
 
@@ -76,7 +73,7 @@ pub async fn create_pledge(
         return Err(AppError::InvalidUserData);
     }
 
-    let collection: Collection<Pledge> = db.collection("pledges");
+    let collection: Collection<Pledge> = state.db.collection("pledges");
 
     let pledge = Pledge {
         _id: Some(ObjectId::new()),
@@ -88,7 +85,7 @@ pub async fn create_pledge(
         fan: payload.fan.clone(),
         home_team: payload.home_team.clone(),
         away_team: payload.away_team.clone(),
-        starter_id: payload.starter_id.clone(), // Added starter_id
+        starter_id: payload.starter_id.clone(),
         created_at: Utc::now(),
         updated_at: Utc::now(),
     };
@@ -96,41 +93,31 @@ pub async fn create_pledge(
     // Insert the pledge
     collection.insert_one(&pledge).await?;
 
-    println!("✅ Successfully created pledge for user: {} - Amount: ₿{} - Starter: {}",
-             payload.username, payload.amount, payload.starter_id);
+    println!("✅ Successfully created pledge for user: {} - Amount: ₿{}", payload.username, payload.amount);
     Ok(Json(pledge))
 }
 
 // Get pledge statistics for a specific match
 pub async fn get_pledge_stats(
-    State(db): State<Database>,
+    State(state): State<AppState>,
     Query(query): Query<PledgeStatsQuery>,
 ) -> Result<Json<serde_json::Value>> {
     println!("📊 Getting pledge statistics...");
 
-    // Build filter based on available parameters
-    let mut filter = doc! {};
+    let (home_team, away_team) = match (&query.home_team, &query.away_team) {
+        (Some(home), Some(away)) => (home, away),
+        _ => return Err(AppError::InvalidUserData),
+    };
 
-    if let Some(home_team) = &query.home_team {
-        filter.insert("home_team", home_team);
-    }
+    let collection: Collection<Pledge> = state.db.collection("pledges");
 
-    if let Some(away_team) = &query.away_team {
-        filter.insert("away_team", away_team);
-    }
+    // Build filter for the specific match
+    let filter = doc! {
+        "home_team": home_team,
+        "away_team": away_team
+    };
 
-    if let Some(starter_id) = &query.starter_id {
-        filter.insert("starter_id", starter_id);
-    }
-
-    // Check if we have any filter criteria
-    if filter.is_empty() {
-        return Err(AppError::InvalidUserData);
-    }
-
-    let collection: Collection<Pledge> = db.collection("pledges");
-
-    // Get all pledges matching the filter
+    // Get all pledges for this match
     let cursor = collection.find(filter.clone()).await?;
     let pledges: Vec<Pledge> = cursor.try_collect().await?;
 
@@ -143,8 +130,7 @@ pub async fn get_pledge_stats(
     let away_pledges = pledges.iter().filter(|p| p.selection == "away_team").count() as i64;
     let draw_pledges = pledges.iter().filter(|p| p.selection == "draw").count() as i64;
 
-    // Build response with available filter info
-    let mut stats = serde_json::json!({
+    let stats = serde_json::json!({
         "total_pledges": total_pledges,
         "total_amount": total_amount,
         "selection_breakdown": {
@@ -152,21 +138,11 @@ pub async fn get_pledge_stats(
             "away_team": away_pledges,
             "draw": draw_pledges
         },
-        "filters_applied": {}
+        "match": {
+            "home_team": home_team,
+            "away_team": away_team
+        }
     });
-
-    // Add applied filters to response
-    if let Some(home_team) = &query.home_team {
-        stats["filters_applied"]["home_team"] = serde_json::Value::String(home_team.clone());
-    }
-
-    if let Some(away_team) = &query.away_team {
-        stats["filters_applied"]["away_team"] = serde_json::Value::String(away_team.clone());
-    }
-
-    if let Some(starter_id) = &query.starter_id {
-        stats["filters_applied"]["starter_id"] = serde_json::Value::String(starter_id.clone());
-    }
 
     println!("✅ Successfully fetched pledge statistics");
     Ok(Json(stats))
@@ -174,26 +150,19 @@ pub async fn get_pledge_stats(
 
 // Get user's pledging history
 pub async fn get_user_pledges(
-    State(db): State<Database>,
+    State(state): State<AppState>,
     Query(query): Query<PledgeQuery>,
 ) -> Result<Json<Vec<Pledge>>> {
     println!("👤 Getting user pledges...");
 
     let username = query.username.ok_or(AppError::InvalidUserData)?;
 
-    let collection: Collection<Pledge> = db.collection("pledges");
+    let collection: Collection<Pledge> = state.db.collection("pledges");
 
-    let mut filter = doc! { "username": &username };
-
-    // Optionally filter by starter_id if provided
-    if let Some(starter_id) = &query.starter_id {
-        filter.insert("starter_id", starter_id);
-    }
-
+    let filter = doc! { "username": &username };
     let cursor = collection.find(filter).await?;
     let mut pledges: Vec<Pledge> = cursor.try_collect().await?;
 
-    // SIMPLIFIED: Direct comparison, no Option handling
     pledges.sort_by(|a, b| b.created_at.cmp(&a.created_at));
 
     println!("✅ Successfully fetched {} pledges for user", pledges.len());
@@ -201,16 +170,15 @@ pub async fn get_user_pledges(
 }
 
 pub async fn get_recent_pledges(
-    State(db): State<Database>,
+    State(state): State<AppState>,
 ) -> Result<Json<Vec<Pledge>>> {
     println!("🕒 Getting recent pledges...");
 
-    let collection: Collection<Pledge> = db.collection("pledges");
+    let collection: Collection<Pledge> = state.db.collection("pledges");
 
     let cursor = collection.find(doc! {}).await?;
     let mut pledges: Vec<Pledge> = cursor.try_collect().await?;
 
-    // SIMPLIFIED: Direct comparison, no Option handling
     pledges.sort_by(|a, b| b.created_at.cmp(&a.created_at));
 
     let recent_pledges: Vec<Pledge> = pledges.into_iter().take(10).collect();

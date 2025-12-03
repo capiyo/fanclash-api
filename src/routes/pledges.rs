@@ -2,13 +2,13 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use mongodb::Database;
 
+use crate::state::AppState;
 use crate::handlers::pledges::{
     get_pledges, create_pledge, get_pledge_stats, get_user_pledges, get_recent_pledges
 };
 
-pub fn routes() -> Router<Database> {
+pub fn routes() -> Router<AppState> {
     Router::new()
         // GET /api/pledges - Get all pledges with optional filtering
         // POST /api/pledges - Create a new pledge

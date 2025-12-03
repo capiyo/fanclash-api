@@ -1,14 +1,16 @@
 use axum::{
-    routing::{post},
+    routing::{get, post, put},
     Router,
 };
-use mongodb::Database;
 
-use crate::handlers::auth::{register, login, login_with_phone};
+use crate::state::AppState;
 
-pub fn routes() -> Router<Database> {
+pub fn routes() -> Router<AppState> {
     Router::new()
-        .route("/register", post(register))
-        .route("/login", post(login))
-        .route("/login-with-phone", post(login_with_phone))
+        .route("/register", post(crate::handlers::auth::register))
+        .route("/login", post(crate::handlers::auth::login))
+        .route("/login/phone", post(crate::handlers::auth::login_with_phone))
+        .route("/users", get(crate::handlers::auth::get_all_users))
+        .route("/profile/:id", get(crate::handlers::auth::get_user_profile))
+
 }
