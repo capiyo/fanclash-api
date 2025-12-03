@@ -15,6 +15,7 @@ pub struct Pledge {
     pub fan: String,
     pub home_team: String,
     pub away_team: String,
+    pub starter_id: String, // Added field
 
     #[serde(with = "bson::serde_helpers::chrono_datetime_as_bson_datetime")]
     pub created_at: DateTime<Utc>,  // Changed from Option<DateTime<Utc>>
@@ -32,6 +33,7 @@ pub struct CreatePledge {
     pub fan: String,
     pub home_team: String,
     pub away_team: String,
+    pub starter_id: String, // Added field
 }
 
 #[derive(Debug, Deserialize)]
@@ -40,4 +42,5 @@ pub struct PledgeQuery {
     pub phone: Option<String>,
     pub home_team: Option<String>,
     pub away_team: Option<String>,
+    pub starter_id: Option<String>, // Added field
 }
