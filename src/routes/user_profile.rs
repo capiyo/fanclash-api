@@ -15,7 +15,7 @@ pub fn user_profile_routes() -> Router<AppState> {
         // GET routes
         .route("/profiles", get(get_user_profiles))
         .route("/profile/:id", get(get_user_profile_by_id))
-        .route("/profile/:phone", get(get_user_profile_by_phone))
+        .route("/profile/phone/:phone", get(get_user_profile_by_phone))
         .route("/profile/stats", get(get_user_stats))
         .route("/profile/recent", get(get_recent_users))
 
