@@ -13,11 +13,11 @@ use crate::state::AppState;
 pub fn user_profile_routes() -> Router<AppState> {
     Router::new()
         // GET routes
-        .route("/api/users/profiles", get(get_user_profiles))
-        .route("/api/users/profiles/:id", get(get_user_profile_by_id))
-        .route("/api/users/phone/:phone", get(get_user_profile_by_phone))
-        .route("/api/users/stats", get(get_user_stats))
-        .route("/api/users/recent", get(get_recent_users))
+        .route("/profiles", get(get_user_profiles))
+        .route("/profile/:id", get(get_user_profile_by_id))
+        .route("/profile/:phone", get(get_user_profile_by_phone))
+        .route("/profile/stats", get(get_user_stats))
+        .route("/profile/recent", get(get_recent_users))
 
         // POST routes
         .route("/save-profile", post(save_user_profile))
