@@ -20,9 +20,9 @@ pub fn user_profile_routes() -> Router<AppState> {
         .route("/api/users/recent", get(get_recent_users))
 
         // POST routes
-        .route("/api/users/save-profile", post(save_user_profile))
+        .route("/save-profile", post(save_user_profile))
         .route("/create_profile", post(create_user_profile))
-        .route("/api/users/update-balance", post(update_user_balance))
+        .route("/update-balance", post(update_user_balance))
 
         // PUT routes (for updates)
         .route("/api/users/profiles/:id", put(save_user_profile))
