@@ -1,4 +1,4 @@
-﻿# Rust - NEVER commit build files!
+﻿# Rust - NEVER commit these!
 target/
 Cargo.lock
 
@@ -8,6 +8,10 @@ Cargo.lock
 *.exe
 *.dll
 
-# OS
+# OS files
 .DS_Store
 Thumbs.db
+
+# Editor files
+.vscode/
+.idea/
