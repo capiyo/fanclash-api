@@ -117,6 +117,7 @@ async fn build_router(app_state: AppState) -> Router {
         .nest("/api/posts", routes::posts::routes())
         .nest("/api/pledges", routes::pledges::routes())
         .nest("/api/mpesa", routes::mpesa::mpesa_routes())
+        .nest("/api/profile", routes::user_profile::user_profile_routes())
         .nest("/api", routes::posts::upload_routes())
         .layer(cors)
         .with_state(app_state)
