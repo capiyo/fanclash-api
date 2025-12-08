@@ -8,7 +8,6 @@ use serde::{Deserialize, Serialize};
 use tracing::{info, error};
 
 use crate::state::AppState;
-use crate::services::mpesa_service::MpesaService;
 
 // C2B Request
 #[derive(Debug, Deserialize)]

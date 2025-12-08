@@ -1,7 +1,6 @@
 use serde::{Deserialize, Serialize};
 use mongodb::bson::oid::ObjectId;
 use chrono::{DateTime, Utc};
-use mongodb::bson;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MpesaTransaction {

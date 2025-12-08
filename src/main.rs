@@ -1,8 +1,8 @@
 use tracing_subscriber;
 use axum::{
-    http::{StatusCode, HeaderValue},
+    http::HeaderValue,
     response::Json,
-    routing::{get, post},
+    routing::get,
     Router,
     http::Method,
 };
@@ -10,7 +10,6 @@ use tower_http::cors::{Any, CorsLayer};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use axum::extract::State;
-use dotenvy::dotenv;
 
 mod routes;
 mod models;
