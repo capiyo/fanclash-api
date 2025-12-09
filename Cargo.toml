@@ -48,3 +48,4 @@ validator = { version = "0.18", features = ["derive"] }
 futures = "0.3"
 
 async-trait = "0.1"
+sqlx = "0.9.0-alpha.1"

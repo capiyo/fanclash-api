@@ -8,3 +8,4 @@ pub(crate) mod pledges;
 pub(crate) mod mpesa_handlers;
 pub(crate) mod b2c_handlers;
 pub(crate) mod user_profile;
+pub(crate) mod bets;

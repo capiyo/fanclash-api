@@ -4,3 +4,4 @@ pub(crate) mod posts;
 pub(crate) mod pledges;
 pub(crate) mod mpesa;
 pub(crate) mod user_profile;
+mod bets;
