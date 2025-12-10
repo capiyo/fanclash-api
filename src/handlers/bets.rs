@@ -12,7 +12,7 @@ use crate::{
     errors::{AppError, Result},
     models::bets::{
         Bet, CreateBetRequest, UpdateBetRequest, UpdateBalanceRequest,
-        UpdatePledgeStatusRequest, BetResponse, SuccessResponse,
+        UpdatePledgeStatusRequest, BetResponse, SuccessResponse, PledgeId,
     },
     models::pledges::Pledge,
 };
@@ -80,14 +80,14 @@ pub async fn create_bet(
     State(state): State<AppState>,
     Json(payload): Json<CreateBetRequest>,
 ) -> Result<Json<BetResponse>> {
-    println!("🎯 Creating new bet for pledge: {}", payload.pledge_id);
+    println!("🎯 Creating new bet for pledge: {}", payload.pledge_id.to_string());
 
     // Validate required fields
     if payload.starter_id.is_empty() || payload.finisher_id.is_empty() {
         return Err(AppError::InvalidUserData);
     }
 
-    if payload.starter_amount <= 0.0 || payload.finisher_amount <= 0.0 {
+    if payload.starter_amount <= 0.0 {
         return Err(AppError::InvalidUserData);
     }
 
@@ -103,12 +103,22 @@ pub async fn create_bet(
         return Err(AppError::ValidationError("Starter and finisher must have opposite selections".to_string()));
     }
 
+    // Calculate finisher_amount if not provided
+    let finisher_amount = payload.finisher_amount
+        .unwrap_or_else(|| payload.total_pot - payload.starter_amount);
+
+    // Validate finisher amount
+    if finisher_amount <= 0.0 {
+        return Err(AppError::ValidationError("Finisher amount must be greater than 0".to_string()));
+    }
+
     let collection: Collection<Bet> = state.db.collection("bets");
     let now = Utc::now();
 
-    let bet = Bet {
+    // Convert CreateBetRequest to Bet using From trait
+    let bet: Bet = Bet {
         id: Some(ObjectId::new()),
-        pledge_id: payload.pledge_id.clone(),
+        pledge_id: payload.pledge_id.to_string(),
         starter_id: payload.starter_id.clone(),
         starter_username: payload.starter_username.clone(),
         starter_selection: payload.starter_selection.clone(),
@@ -117,7 +127,7 @@ pub async fn create_bet(
         finisher_id: payload.finisher_id.clone(),
         finisher_username: payload.finisher_username.clone(),
         finisher_selection: payload.finisher_selection.clone(),
-        finisher_amount: payload.finisher_amount,
+        finisher_amount,
         finisher_team: payload.finisher_team.clone(),
         home_team: payload.home_team.clone(),
         away_team: payload.away_team.clone(),
@@ -126,14 +136,17 @@ pub async fn create_bet(
         sport_type: payload.sport_type.clone(),
         total_pot: payload.total_pot,
         status: payload.status.clone(),
-        winner_id: None,
-        winner_username: None,
-        winning_selection: None,
+        winner_id: payload.winner_id,
+        winner_username: payload.winner_username,
+        winning_selection: payload.winning_selection,
         odds: payload.odds.clone(),
         created_at: now,
         updated_at: now,
         completed_at: None,
     };
+
+    // Alternative using From trait (if you implement it)
+    // let bet: Bet = payload.into();
 
     // Insert the bet
     collection.insert_one(&bet).await?;
