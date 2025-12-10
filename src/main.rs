@@ -116,6 +116,8 @@ async fn build_router(app_state: AppState) -> Router {
         .nest("/api/auth", routes::auth::routes())
         .nest("/api/games", routes::games::routes())
         .nest("/api/posts", routes::posts::routes())
+        .nest("/api/bets", routes::bets::bets_routes())
+
         .nest("/api/pledges", routes::pledges::routes())
         .nest("/api/mpesa", routes::mpesa::mpesa_routes())
         .nest("/api/profile", routes::user_profile::user_profile_routes())
