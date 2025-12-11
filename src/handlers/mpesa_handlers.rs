@@ -283,25 +283,33 @@ pub async fn check_payment_status(
 
     match collection.find_one(filter).await {
         Ok(Some(transaction)) => {
-            // ✅ Fix: Convert DateTime to string for JSON response
+            // ✅ CRITICAL FIX: Convert all DateTime fields to strings
             let response = json!({
                 "success": transaction.status == "completed",
                 "status": transaction.status,
-                "result_code": transaction.result_code.map(|c| c.to_string()),
+                "result_code": transaction.result_code,
                 "result_desc": transaction.result_desc,
                 "checkout_request_id": transaction.checkout_request_id,
+                "merchant_request_id": transaction.merchant_request_id,
                 "amount": transaction.amount,
-                "timestamp": transaction.updated_at.to_rfc3339(), // ✅ Convert to string
+                "phone_number": transaction.phone_number,
+                // ✅ Convert DateTime to string
+                "updated_at": transaction.updated_at.to_rfc3339(),
+                "created_at": transaction.created_at.to_rfc3339(),
             });
+
+            println!("✅ Found transaction: {:?}", transaction.status);
             (StatusCode::OK, AxumJson(response))
         }
         Ok(None) => {
+            println!("⚠️ Transaction not found, still pending");
             (
                 StatusCode::OK,
                 AxumJson(json!({
                     "success": false,
                     "status": "pending",
                     "checkout_request_id": request.checkout_request_id,
+                    "message": "Transaction still processing"
                 }))
             )
         }
