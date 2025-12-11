@@ -276,23 +276,22 @@ pub async fn check_payment_status(
     State(state): State<AppState>,
     Json(request): Json<StatusRequest>,
 ) -> (StatusCode, AxumJson<serde_json::Value>) {
-    info!("Checking payment status for: {}", request.checkout_request_id);
+    println!("🔍 Checking payment status for: {}", request.checkout_request_id);
 
     let collection: Collection<Transaction> = state.db.collection("transactions");
     let filter = doc! { "checkout_request_id": &request.checkout_request_id };
 
     match collection.find_one(filter).await {
         Ok(Some(transaction)) => {
+            // ✅ Fix: Convert DateTime to string for JSON response
             let response = json!({
                 "success": transaction.status == "completed",
                 "status": transaction.status,
-                "ResultCode": transaction.result_code.map(|c| c.to_string()),
                 "result_code": transaction.result_code.map(|c| c.to_string()),
-                "ResultDesc": transaction.result_desc,
                 "result_desc": transaction.result_desc,
                 "checkout_request_id": transaction.checkout_request_id,
                 "amount": transaction.amount,
-                "timestamp": transaction.updated_at.to_rfc3339(),
+                "timestamp": transaction.updated_at.to_rfc3339(), // ✅ Convert to string
             });
             (StatusCode::OK, AxumJson(response))
         }
@@ -302,13 +301,12 @@ pub async fn check_payment_status(
                 AxumJson(json!({
                     "success": false,
                     "status": "pending",
-                    "ResultCode": null,
                     "checkout_request_id": request.checkout_request_id,
                 }))
             )
         }
         Err(e) => {
-            error!("Database error: {}", e);
+            println!("❌ Database error: {}", e);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 AxumJson(json!({
