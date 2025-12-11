@@ -78,44 +78,28 @@ pub async fn initiate_stk_push(
     State(state): State<AppState>,
     Json(request): Json<StkPushRequest>,
 ) -> Result<AxumJson<serde_json::Value>, (StatusCode, AxumJson<serde_json::Value>)> {
-    info!("Received STK push request: {:?}", request);
+    println!("🔵 [STK] === INITIATING STK PUSH ===");
+    println!("📱 Phone: {}", request.phone_number);
+    println!("💰 Amount: {}", request.amount);
+    println!("👤 User ID: {:?}", request.account_reference);
 
-    // Validate input
+    // Validate
     if request.phone_number.is_empty() || request.amount.is_empty() {
-        error!("Invalid request: phone_number or amount is empty");
-        return Err((
-            StatusCode::BAD_REQUEST,
-            AxumJson(json!({
-                "success": false,
-                "error": "Phone number and amount are required"
-            }))
-        ));
+        println!("❌ [STK] Validation failed: empty phone or amount");
+        return Err((StatusCode::BAD_REQUEST, AxumJson(json!({
+            "success": false,
+            "error": "Phone number and amount are required"
+        }))));
     }
 
-    // Parse amount
     let amount: f64 = match request.amount.parse() {
-        Ok(amount) => {
-            if amount <= 0.0 {
-                error!("Invalid amount: {}", amount);
-                return Err((
-                    StatusCode::BAD_REQUEST,
-                    AxumJson(json!({
-                        "success": false,
-                        "error": "Amount must be greater than 0"
-                    }))
-                ));
-            }
-            amount
-        }
-        Err(_) => {
-            error!("Failed to parse amount");
-            return Err((
-                StatusCode::BAD_REQUEST,
-                AxumJson(json!({
-                    "success": false,
-                    "error": "Invalid amount format"
-                }))
-            ));
+        Ok(amount) if amount > 0.0 => amount,
+        _ => {
+            println!("❌ [STK] Invalid amount: {}", request.amount);
+            return Err((StatusCode::BAD_REQUEST, AxumJson(json!({
+                "success": false,
+                "error": "Amount must be greater than 0"
+            }))));
         }
     };
 
@@ -123,40 +107,41 @@ pub async fn initiate_stk_push(
     let mpesa_service = match &state.mpesa_service {
         Some(service) => service,
         None => {
-            error!("M-Pesa service not available");
-            return Err((
-                StatusCode::SERVICE_UNAVAILABLE,
-                AxumJson(json!({
-                    "success": false,
-                    "error": "M-Pesa service is not available"
-                }))
-            ));
+            println!("❌ [STK] M-Pesa service unavailable");
+            return Err((StatusCode::SERVICE_UNAVAILABLE, AxumJson(json!({
+                "success": false,
+                "error": "M-Pesa service is not available"
+            }))));
         }
     };
 
-    // Initiate STK push
+    println!("✅ [STK] Calling M-Pesa service...");
+
+    // Call M-Pesa service
     let response = match mpesa_service.initiate_stk_push(
         &request.phone_number,
         &request.amount,
         request.account_reference.as_deref(),
         request.transaction_desc.as_deref(),
     ).await {
-        Ok(resp) => resp,
+        Ok(resp) => {
+            println!("✅ [STK] M-Pesa response received");
+            println!("🎫 MerchantRequestID: {}", resp.merchant_request_id);
+            println!("🎫 CheckoutRequestID: {}", resp.checkout_request_id);
+            println!("📝 Response: {}", resp.response_description);
+            resp
+        }
         Err(e) => {
-            error!("Failed to initiate STK push: {}", e);
-            return Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                AxumJson(json!({
-                    "success": false,
-                    "error": e.to_string()
-                }))
-            ));
+            println!("❌ [STK] M-Pesa service error: {}", e);
+            return Err((StatusCode::INTERNAL_SERVER_ERROR, AxumJson(json!({
+                "success": false,
+                "error": e.to_string()
+            }))));
         }
     };
 
-    info!("STK push initiated: {}", response.merchant_request_id);
-
-    // Save transaction to database
+    // Save to database
+    println!("💾 [STK] Saving transaction to database...");
     let transaction = Transaction {
         id: None,
         user_id: request.account_reference.clone().unwrap_or_else(|| "unknown".to_string()),
@@ -175,12 +160,13 @@ pub async fn initiate_stk_push(
         completed_at: None,
     };
 
-    // Save to MongoDB
     let collection: Collection<Transaction> = state.db.collection("transactions");
-    if let Err(e) = collection.insert_one(&transaction).await {
-        error!("Failed to save transaction: {}", e);
-    }
+    match collection.insert_one(&transaction).await {
+        Ok(_) => println!("✅ [STK] Transaction saved to database"),
+        Err(e) => println!("⚠️ [STK] Failed to save transaction: {}", e),
+    };
 
+    // Prepare response
     let api_response = json!({
         "success": true,
         "CheckoutRequestID": response.checkout_request_id,
@@ -191,36 +177,16 @@ pub async fn initiate_stk_push(
         "customer_message": response.customer_message,
     });
 
-    info!("Returning STK response: {:?}", api_response);
+    println!("✅ [STK] Returning response to client");
+    println!("📤 Response: {:?}", api_response);
+    println!("🟢 [STK] === STK PUSH COMPLETE ===");
+
     Ok(AxumJson(api_response))
 }
 
 // ✅ HANDLER 2: M-Pesa Callback
 pub async fn mpesa_callback(
-
-
-
-    // ADD THIS LOGGING to see what's arriving
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+//ADD THIS LOGGING to see what's arriving
 
     State(state): State<AppState>,
     Json(payload): Json<MpesaCallback>,
