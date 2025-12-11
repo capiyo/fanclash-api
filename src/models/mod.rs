@@ -8,5 +8,6 @@ pub(crate) mod mpesa_transactions;
 pub(crate) mod user_profile;
 mod livegames;
 pub(crate) mod bets;
+pub(crate) mod transaction;
 
 
