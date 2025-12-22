@@ -1,3 +1,4 @@
+// src/errors.rs
 use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
@@ -61,29 +62,50 @@ pub enum AppError {
 
     #[error("External API error: {0}")]
     ExternalApi(String),
+
+    // New variants for Cloudinary and AppState
+    #[error("Cloudinary error: {0}")]
+    CloudinaryError(String),
+
+    #[error("Configuration error: {0}")]
+    ConfigurationError(String),
+
+    #[error("Service error: {0}")]
+    ServiceError(String),
+
+    #[error("Redis error: {0}")]
+    RedisError(String),
+
+    #[error("HTTP client error: {0}")]
+    HttpClientError(String),
 }
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
-        let (status, error_message) = match self {
-            AppError::MongoDB(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Database error"),
-            AppError::Multipart(_) => (StatusCode::BAD_REQUEST, "Invalid multipart data"),
-            AppError::Io(_) => (StatusCode::INTERNAL_SERVER_ERROR, "IO error"),
-            AppError::InvalidImageFormat => (StatusCode::BAD_REQUEST, "Invalid image format"),
-            AppError::ImageTooLarge => (StatusCode::BAD_REQUEST, "Image too large"),
-            AppError::NoImageProvided => (StatusCode::BAD_REQUEST, "No image provided"),
-            AppError::InvalidUserData => (StatusCode::BAD_REQUEST, "Invalid user data"),
-            AppError::PostNotFound => (StatusCode::NOT_FOUND, "Post not found"),
-            AppError::DocumentNotFound => (StatusCode::NOT_FOUND, "Document not found"),
-            AppError::InvalidObjectId(_) => (StatusCode::BAD_REQUEST, "Invalid ID format"),
-            AppError::DuplicateKey => (StatusCode::CONFLICT, "Duplicate entry"),
-            AppError::MpesaError(_) => (StatusCode::BAD_GATEWAY, "M-Pesa error"),
-            AppError::AuthError => (StatusCode::UNAUTHORIZED, "Authentication failed"),
-            AppError::Unauthorized => (StatusCode::FORBIDDEN, "Unauthorized access"),
-            AppError::ValidationError(_) => (StatusCode::BAD_REQUEST, "Validation failed"),
-            AppError::RateLimitExceeded => (StatusCode::TOO_MANY_REQUESTS, "Rate limit exceeded"),
-            AppError::ServiceUnavailable(_) => (StatusCode::SERVICE_UNAVAILABLE, "Service unavailable"),
-            AppError::ExternalApi(_) => (StatusCode::BAD_GATEWAY, "External API error"),
+        let (status, error_message) = match &self {
+            AppError::MongoDB(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Database error".to_string()),
+            AppError::Multipart(_) => (StatusCode::BAD_REQUEST, "Invalid multipart data".to_string()),
+            AppError::Io(_) => (StatusCode::INTERNAL_SERVER_ERROR, "IO error".to_string()),
+            AppError::InvalidImageFormat => (StatusCode::BAD_REQUEST, "Invalid image format".to_string()),
+            AppError::ImageTooLarge => (StatusCode::BAD_REQUEST, "Image too large".to_string()),
+            AppError::NoImageProvided => (StatusCode::BAD_REQUEST, "No image provided".to_string()),
+            AppError::InvalidUserData => (StatusCode::BAD_REQUEST, "Invalid user data".to_string()),
+            AppError::PostNotFound => (StatusCode::NOT_FOUND, "Post not found".to_string()),
+            AppError::DocumentNotFound => (StatusCode::NOT_FOUND, "Document not found".to_string()),
+            AppError::InvalidObjectId(_) => (StatusCode::BAD_REQUEST, "Invalid ID format".to_string()),
+            AppError::DuplicateKey => (StatusCode::CONFLICT, "Duplicate entry".to_string()),
+            AppError::MpesaError(_) => (StatusCode::BAD_GATEWAY, "M-Pesa error".to_string()),
+            AppError::AuthError => (StatusCode::UNAUTHORIZED, "Authentication failed".to_string()),
+            AppError::Unauthorized => (StatusCode::FORBIDDEN, "Unauthorized access".to_string()),
+            AppError::ValidationError(_) => (StatusCode::BAD_REQUEST, "Validation failed".to_string()),
+            AppError::RateLimitExceeded => (StatusCode::TOO_MANY_REQUESTS, "Rate limit exceeded".to_string()),
+            AppError::ServiceUnavailable(_) => (StatusCode::SERVICE_UNAVAILABLE, "Service unavailable".to_string()),
+            AppError::ExternalApi(_) => (StatusCode::BAD_GATEWAY, "External API error".to_string()),
+            AppError::CloudinaryError(_) => (StatusCode::BAD_GATEWAY, "Cloudinary error".to_string()),
+            AppError::ConfigurationError(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Configuration error".to_string()),
+            AppError::ServiceError(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Service error".to_string()),
+            AppError::RedisError(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Redis error".to_string()),
+            AppError::HttpClientError(_) => (StatusCode::INTERNAL_SERVER_ERROR, "HTTP client error".to_string()),
         };
 
         let body = Json(json!({
@@ -134,18 +156,7 @@ impl From<std::num::ParseIntError> for AppError {
     }
 }
 
-// Helper conversion functions (not From traits)
-pub trait IntoAppError {
-    fn into_app_error(self) -> AppError;
-}
-
-impl IntoAppError for chrono::format::ParseError {
-    fn into_app_error(self) -> AppError {
-        AppError::ValidationError(format!("Date parsing error: {}", self))
-    }
-}
-
-// Helper functions
+// Helper conversion functions
 impl AppError {
     pub fn invalid_data(msg: impl Into<String>) -> Self {
         AppError::ValidationError(msg.into())
@@ -157,6 +168,22 @@ impl AppError {
 
     pub fn external_api(msg: impl Into<String>) -> Self {
         AppError::ExternalApi(msg.into())
+    }
+
+    pub fn cloudinary(msg: impl Into<String>) -> Self {
+        AppError::CloudinaryError(msg.into())
+    }
+
+    pub fn configuration(msg: impl Into<String>) -> Self {
+        AppError::ConfigurationError(msg.into())
+    }
+
+    pub fn service(msg: impl Into<String>) -> Self {
+        AppError::ServiceError(msg.into())
+    }
+
+    pub fn redis(msg: impl Into<String>) -> Self {
+        AppError::RedisError(msg.into())
     }
 }
 

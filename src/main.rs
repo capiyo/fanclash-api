@@ -1,24 +1,18 @@
-use tracing_subscriber;
-use axum::{
-    http::HeaderValue,
-    response::Json,
-    routing::get,
-    Router,
-    http::Method,
-};
-use tower_http::cors::{Any, CorsLayer};
+use axum::extract::State;
+use axum::{http::HeaderValue, http::Method, response::Json, routing::get, Router};
 use std::net::SocketAddr;
 use std::sync::Arc;
-use axum::extract::State;
+use tower_http::cors::{Any, CorsLayer};
+use tracing_subscriber;
 
-mod routes;
-mod models;
+mod config;
+mod database;
+mod dumper;
+mod errors;
 mod handlers;
 mod middleware;
-mod database;
-mod errors;
-mod dumper;
-mod config;
+mod models;
+mod routes;
 mod services;
 mod state;
 
@@ -50,22 +44,31 @@ async fn create_directories() {
     }
 }
 
-
 async fn initialize_app_state(db: mongodb::Database) -> AppState {
-    let mut app_state = AppState::new(db);
+    // Initialize AppState with Cloudinary
+    let mut app_state = match AppState::new(db) {
+        Ok(state) => {
+            tracing::info!("✅ Cloudinary service initialized successfully");
+            state
+        }
+        Err(e) => {
+            tracing::error!("❌ Failed to initialize Cloudinary service: {}", e);
+            // You can choose to panic or continue without Cloudinary
+            // For now, we'll panic since Cloudinary is likely required for image uploads
+            panic!("Failed to initialize Cloudinary service: {}", e);
+        }
+    };
 
     tracing::info!("🔧 Attempting to initialize M-Pesa service...");
 
-    // Try to load AppConfig (not MpesaConfig)
-    let config_result = std::panic::catch_unwind(|| {
-        config::AppConfig::from_env()  // Changed from MpesaConfig to AppConfig
-    });
+    // Try to load AppConfig
+    let config_result = std::panic::catch_unwind(|| config::AppConfig::from_env());
 
     match config_result {
         Ok(config) => {
             tracing::info!("✅ App config loaded successfully");
-            tracing::info!("📱 Short code: {}", config.mpesa_short_code);  // Changed from short_code
-            tracing::info!("🌐 Environment: {}", config.mpesa_environment);  // Changed from environment
+            tracing::info!("📱 Short code: {}", config.mpesa_short_code);
+            tracing::info!("🌐 Environment: {}", config.mpesa_environment);
 
             // Create M-Pesa service
             let mpesa_service = Arc::new(services::mpesa_service::MpesaService::new(config));
@@ -95,17 +98,21 @@ async fn initialize_app_state(db: mongodb::Database) -> AppState {
 async fn build_router(app_state: AppState) -> Router {
     let cors = CorsLayer::new()
         .allow_origin(Any)
-       /* .allow_origin([
-                      "https://fanclash.netlify.app".parse::<HeaderValue>().unwrap(),
-            "https://fanclash-app.netlify.app".parse::<HeaderValue>().unwrap(),
-            "http://10.145.30.38:3001".parse::<HeaderValue>().unwrap(),
-            "http://192.168.56.1:3001".parse::<HeaderValue>().unwrap(),
-            "http://localhost:3000".parse::<HeaderValue>().unwrap(),
-            "http://localhost:3001".parse::<HeaderValue>().unwrap(),
-            "http://172.19.30.38:3001".parse::<HeaderValue>().unwrap(),)]*/
-
-
-        .allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE, Method::OPTIONS])
+        /* .allow_origin([
+                  "https://fanclash.netlify.app".parse::<HeaderValue>().unwrap(),
+        "https://fanclash-app.netlify.app".parse::<HeaderValue>().unwrap(),
+        "http://10.145.30.38:3001".parse::<HeaderValue>().unwrap(),
+        "http://192.168.56.1:3001".parse::<HeaderValue>().unwrap(),
+        "http://localhost:3000".parse::<HeaderValue>().unwrap(),
+        "http://localhost:3001".parse::<HeaderValue>().unwrap(),
+        "http://172.19.30.38:3001".parse::<HeaderValue>().unwrap(),)]*/
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::DELETE,
+            Method::OPTIONS,
+        ])
         .allow_headers(Any)
         .allow_credentials(false);
 
@@ -117,7 +124,6 @@ async fn build_router(app_state: AppState) -> Router {
         .nest("/api/games", routes::games::routes())
         .nest("/api/posts", routes::posts::routes())
         .nest("/api/bets", routes::bets::bets_routes())
-
         .nest("/api/pledges", routes::pledges::routes())
         .nest("/api/mpesa", routes::mpesa::mpesa_routes())
         .nest("/api/profile", routes::user_profile::user_profile_routes())
