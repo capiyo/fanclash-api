@@ -133,8 +133,8 @@ async fn build_router(app_state: AppState) -> Router {
 }
 
 async fn start_server(app: Router) {
-    let port = std::env::var("PORT").unwrap_or_else(|_| "3000".to_string());
-    let addr = SocketAddr::from(([0, 0, 0, 0], port.parse().unwrap_or(3000)));
+    let port = std::env::var("PORT").unwrap_or_else(|_| "10000".to_string());
+    let addr = SocketAddr::from(([0, 0, 0, 0], port.parse().unwrap_or(10000)));
 
     tracing::info!("🚀 Server starting on {}", addr);
 

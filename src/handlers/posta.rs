@@ -159,8 +159,16 @@ pub async fn create_post(
         return Err(AppError::InvalidUserData);
     }
 
+    // Extract values from Option with proper error handling
     let image_data = image_data.ok_or(AppError::NoImageProvided)?;
     let file_extension = file_extension.ok_or(AppError::InvalidImageFormat)?;
+
+    println!("📊 Post data received:");
+    println!("   User ID: {}", user_id);
+    println!("   User Name: {}", user_name);
+    println!("   Caption: {}", caption);
+    println!("   Image size: {} bytes", image_data.len());
+    println!("   File extension: {}", file_extension);
 
     // Use Cloudinary service from AppState
     let cloudinary_service = &state.cloudinary;
@@ -168,12 +176,44 @@ pub async fn create_post(
     // Generate unique public ID for Cloudinary
     let public_id = format!("post_{}_{}", user_id, Uuid::new_v4());
 
-    // Upload to Cloudinary
-    let folder = format!("fanclash/posts/{}", user_id);
-    let (image_url, cloudinary_public_id) = cloudinary_service
-        .upload_image_with_preset(&image_data, &folder, Some(&public_id))
+    println!("🌐 Starting Cloudinary upload...");
+    println!("   Public ID: {}", public_id);
+    println!("   Folder: fanclash/posts/{}", user_id);
+
+    // Upload to Cloudinary with error handling and fallback
+    let (image_url, cloudinary_public_id) = match cloudinary_service
+        .upload_image_with_preset(
+            &image_data,
+            &format!("fanclash/posts/{}", user_id),
+            Some(&public_id),
+        )
         .await
-        .map_err(|e| AppError::invalid_data(format!("Failed to upload image: {}", e)))?;
+    {
+        Ok(result) => {
+            println!("✅ Cloudinary upload successful via upload preset");
+            result
+        }
+        Err(preset_error) => {
+            println!("⚠️ Upload preset failed: {}", preset_error);
+            println!("🔄 Trying signed upload as fallback...");
+
+            // Try signed upload as fallback
+            cloudinary_service
+                .upload_image_signed(
+                    &image_data,
+                    &format!("fanclash/posts/{}", user_id),
+                    Some(&public_id),
+                )
+                .await
+                .map_err(|e| {
+                    AppError::invalid_data(format!("Both upload methods failed. Last error: {}", e))
+                })?
+        }
+    };
+
+    println!("✅ Cloudinary upload completed:");
+    println!("   Image URL: {}", image_url);
+    println!("   Cloudinary Public ID: {}", cloudinary_public_id);
 
     // Create post in MongoDB
     let collection: Collection<Post> = state.db.collection("posts");
@@ -191,9 +231,20 @@ pub async fn create_post(
         updated_at: now,
     };
 
-    collection.insert_one(&post).await?;
+    println!("📝 Saving to MongoDB...");
 
-    Ok(Json(json!({
+    match collection.insert_one(&post).await {
+        Ok(insert_result) => {
+            println!("✅ MongoDB insert successful");
+            println!("   Inserted ID: {:?}", insert_result.inserted_id);
+        }
+        Err(e) => {
+            println!("❌ MongoDB insert failed: {}", e);
+            return Err(AppError::from(e));
+        }
+    }
+
+    let response = json!({
         "success": true,
         "message": "Post created successfully",
         "post": {
@@ -205,7 +256,11 @@ pub async fn create_post(
             "created_at": post.created_at.to_rfc3339(),
             "updated_at": post.updated_at.to_rfc3339()
         }
-    })))
+    });
+
+    println!("✅ API Response ready: {:?}", response);
+
+    Ok(Json(response))
 }
 
 pub async fn get_posts(

@@ -1,7 +1,7 @@
+use crate::errors::{AppError, Result};
 use reqwest::multipart;
 use serde_json::Value;
 use std::env;
-use crate::errors::{AppError, Result};
 
 #[derive(Clone)]
 pub struct CloudinaryService {
@@ -13,17 +13,25 @@ pub struct CloudinaryService {
 
 impl CloudinaryService {
     pub fn new() -> Result<Self> {
-        let cloud_name = env::var("CLOUDINARY_CLOUD_NAME")
-            .map_err(|_| AppError::CloudinaryError("CLOUDINARY_CLOUD_NAME not set".into()))?;
-        
+        let cloud_name = env::var("CLOUDINARY_CLOUD_NAME").map_err(|e| {
+            AppError::CloudinaryError(format!("CLOUDINARY_CLOUD_NAME not set: {}", e))
+        })?;
+
         let api_key = env::var("CLOUDINARY_API_KEY")
-            .map_err(|_| AppError::CloudinaryError("CLOUDINARY_API_KEY not set".into()))?;
-        
-        let api_secret = env::var("CLOUDINARY_API_SECRET")
-            .map_err(|_| AppError::CloudinaryError("CLOUDINARY_API_SECRET not set".into()))?;
+            .map_err(|e| AppError::CloudinaryError(format!("CLOUDINARY_API_KEY not set: {}", e)))?;
+
+        let api_secret = env::var("CLOUDINARY_API_SECRET").map_err(|e| {
+            AppError::CloudinaryError(format!("CLOUDINARY_API_SECRET not set: {}", e))
+        })?;
 
         let upload_preset = env::var("CLOUDINARY_UPLOAD_PRESET")
-            .unwrap_or_else(|_| "ml_default".to_string());
+            .unwrap_or_else(|_| "rust_backend_upload".to_string());
+
+        println!("🔧 Cloudinary Configuration:");
+        println!("   Cloud Name: {}", cloud_name);
+        println!("   API Key: {}...", &api_key[0..8]); // Show first 8 chars only for security
+        println!("   API Secret: {}...", &api_secret[0..8]);
+        println!("   Upload Preset: {}", upload_preset);
 
         Ok(Self {
             cloud_name,
@@ -33,87 +41,6 @@ impl CloudinaryService {
         })
     }
 
-    /// Upload image to Cloudinary using signed upload
-    pub async fn upload_image(
-        &self,
-        image_data: &[u8],
-        folder: &str,
-        public_id: Option<&str>,
-    ) -> Result<(String, String)> {
-        let timestamp = chrono::Utc::now().timestamp().to_string();
-        
-        // Generate signature
-        let signature_data = format!(
-            "folder={}&timestamp={}{}",
-            folder, timestamp, self.api_secret
-        );
-        let signature = format!("{:x}", md5::compute(signature_data));
-
-        let upload_url = format!(
-            "https://api.cloudinary.com/v1_1/{}/image/upload",
-            self.cloud_name
-        );
-
-        let client = reqwest::Client::new();
-        
-        // Build multipart form
-        let mut form = multipart::Form::new()
-            .text("api_key", self.api_key.clone())
-            .text("timestamp", timestamp.clone())
-            .text("signature", signature)
-            .text("folder", folder.to_string())
-            .part(
-                "file",
-                multipart::Part::bytes(image_data.to_vec())
-                    .file_name("image.jpg")
-                    .mime_str("image/jpeg")
-                    .map_err(|e| AppError::CloudinaryError(e.to_string()))?
-            );
-
-        // Add public_id if provided
-        if let Some(pid) = public_id {
-            form = form.text("public_id", pid.to_string());
-        }
-
-        // Send request
-        let response = client
-            .post(&upload_url)
-            .multipart(form)
-            .send()
-            .await
-            .map_err(|e| AppError::CloudinaryError(format!("Upload failed: {}", e)))?;
-
-        if !response.status().is_success() {
-            let error_text = response.text().await
-                .unwrap_or_else(|_| "Unknown error".to_string());
-            return Err(AppError::CloudinaryError(format!("Cloudinary API error: {}", error_text)));
-        }
-
-        let result: Value = response.json()
-            .await
-            .map_err(|e| AppError::CloudinaryError(format!("Failed to parse response: {}", e)))?;
-
-        // Check for Cloudinary error
-        if let Some(error) = result.get("error") {
-            let error_msg = error["message"]
-                .as_str()
-                .unwrap_or("Unknown Cloudinary error");
-            return Err(AppError::CloudinaryError(error_msg.to_string()));
-        }
-
-        let secure_url = result["secure_url"]
-            .as_str()
-            .ok_or_else(|| AppError::CloudinaryError("No secure URL in response".to_string()))?
-            .to_string();
-
-        let public_id = result["public_id"]
-            .as_str()
-            .ok_or_else(|| AppError::CloudinaryError("No public ID in response".to_string()))?
-            .to_string();
-
-        Ok((secure_url, public_id))
-    }
-
     /// Upload image using upload preset (unsigned - simpler)
     pub async fn upload_image_with_preset(
         &self,
@@ -121,68 +48,227 @@ impl CloudinaryService {
         folder: &str,
         public_id: Option<&str>,
     ) -> Result<(String, String)> {
+        println!("📤 Starting Cloudinary upload...");
+        println!("   Folder: {}", folder);
+        println!("   Image size: {} bytes", image_data.len());
+        println!("   Upload preset: {}", self.upload_preset);
+
         let upload_url = format!(
             "https://api.cloudinary.com/v1_1/{}/image/upload",
             self.cloud_name
         );
 
-        let client = reqwest::Client::new();
-        
+        println!("   Upload URL: {}", upload_url);
+
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .map_err(|e| AppError::CloudinaryError(format!("Failed to create client: {}", e)))?;
+
         // Build multipart form
         let mut form = multipart::Form::new()
             .text("upload_preset", self.upload_preset.clone())
-            .text("folder", folder.to_string())
-            .part(
-                "file",
-                multipart::Part::bytes(image_data.to_vec())
-                    .file_name("image.jpg")
-                    .mime_str("image/jpeg")
-                    .map_err(|e| AppError::CloudinaryError(e.to_string()))?
-            );
+            .text("folder", folder.to_string());
 
         // Add public_id if provided
         if let Some(pid) = public_id {
+            println!("   Public ID: {}", pid);
             form = form.text("public_id", pid.to_string());
         }
 
-        // Send request
+        // Determine MIME type
+        let mime_type = infer::get(&image_data)
+            .map(|info| info.mime_type())
+            .unwrap_or("image/jpeg");
+
+        println!("   Detected MIME type: {}", mime_type);
+
+        // Add file part
+        form = form.part(
+            "file",
+            multipart::Part::bytes(image_data.to_vec())
+                .file_name("upload.jpg")
+                .mime_str(mime_type)
+                .map_err(|e| {
+                    AppError::CloudinaryError(format!("Failed to set MIME type: {}", e))
+                })?,
+        );
+
+        println!("   Sending request to Cloudinary...");
+
+        // Send request with timeout
         let response = client
             .post(&upload_url)
             .multipart(form)
             .send()
             .await
-            .map_err(|e| AppError::CloudinaryError(format!("Upload failed: {}", e)))?;
+            .map_err(|e| AppError::CloudinaryError(format!("Network error: {}", e)))?;
 
-        let result: Value = response.json()
+        let status = response.status();
+        println!("   Response status: {}", status);
+
+        // Get response text first for debugging
+        let response_text = response
+            .text()
             .await
-            .map_err(|e| AppError::CloudinaryError(format!("Failed to parse response: {}", e)))?;
+            .map_err(|e| AppError::CloudinaryError(format!("Failed to read response: {}", e)))?;
+
+        println!("   Raw response: {}", response_text);
+
+        // Parse JSON
+        let result: Value = serde_json::from_str(&response_text).map_err(|e| {
+            AppError::CloudinaryError(format!(
+                "Failed to parse JSON: {} - Response: {}",
+                e, response_text
+            ))
+        })?;
+
+        println!("   Parsed response: {:?}", result);
 
         // Check for Cloudinary error
         if let Some(error) = result.get("error") {
             let error_msg = error["message"]
                 .as_str()
                 .unwrap_or("Unknown Cloudinary error");
-            return Err(AppError::CloudinaryError(error_msg.to_string()));
+
+            println!("❌ Cloudinary error: {}", error_msg);
+
+            // Check for specific error messages
+            if error_msg.contains("Invalid api_key") {
+                return Err(AppError::CloudinaryError(
+                    "Invalid Cloudinary API key. Please check your credentials.".into(),
+                ));
+            } else if error_msg.contains("upload preset") {
+                return Err(AppError::CloudinaryError(format!(
+                    "Invalid upload preset '{}'. Please create it in Cloudinary console.",
+                    self.upload_preset
+                )));
+            }
+
+            return Err(AppError::CloudinaryError(format!(
+                "Cloudinary error: {}",
+                error_msg
+            )));
         }
 
+        // Get secure URL
         let secure_url = result["secure_url"]
             .as_str()
-            .ok_or_else(|| AppError::CloudinaryError("No secure URL in response".to_string()))?
+            .ok_or_else(|| {
+                println!("❌ No secure_url in response");
+                AppError::CloudinaryError("No secure URL in Cloudinary response".into())
+            })?
             .to_string();
 
         let public_id = result["public_id"]
             .as_str()
-            .ok_or_else(|| AppError::CloudinaryError("No public ID in response".to_string()))?
+            .ok_or_else(|| {
+                println!("❌ No public_id in response");
+                AppError::CloudinaryError("No public ID in Cloudinary response".into())
+            })?
             .to_string();
+
+        println!("✅ Upload successful!");
+        println!("   URL: {}", secure_url);
+        println!("   Public ID: {}", public_id);
 
         Ok((secure_url, public_id))
     }
 
-    /// Delete image from Cloudinary
+    /// Fallback: Upload image using signed upload
+    pub async fn upload_image_signed(
+        &self,
+        image_data: &[u8],
+        folder: &str,
+        public_id: Option<&str>,
+    ) -> Result<(String, String)> {
+        println!("🔐 Using signed upload as fallback...");
+
+        let timestamp = chrono::Utc::now().timestamp().to_string();
+
+        // Create parameters to sign
+        let mut params_to_sign = vec![
+            format!("folder={}", folder),
+            format!("timestamp={}", timestamp),
+        ];
+
+        if let Some(pid) = public_id {
+            params_to_sign.push(format!("public_id={}", pid));
+        }
+
+        // Sort parameters (Cloudinary requirement)
+        params_to_sign.sort();
+        let params_string = params_to_sign.join("&");
+        let signature_string = format!("{}{}", params_string, self.api_secret);
+
+        let signature = format!("{:x}", md5::compute(signature_string));
+
+        println!("   Parameters: {}", params_string);
+        println!("   Signature: {}", signature);
+
+        let upload_url = format!(
+            "https://api.cloudinary.com/v1_1/{}/image/upload",
+            self.cloud_name
+        );
+
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()?;
+
+        // Build multipart form
+        let mut form = multipart::Form::new()
+            .text("api_key", self.api_key.clone())
+            .text("timestamp", timestamp)
+            .text("signature", signature.clone())
+            .text("folder", folder.to_string());
+
+        // Add public_id if provided
+        if let Some(pid) = public_id {
+            form = form.text("public_id", pid.to_string());
+        }
+
+        // Add file
+        form = form.part(
+            "file",
+            multipart::Part::bytes(image_data.to_vec())
+                .file_name("image.jpg")
+                .mime_str("image/jpeg")?,
+        );
+
+        // Send request
+        let response = client.post(&upload_url).multipart(form).send().await?;
+
+        let response_text = response.text().await?;
+        println!("   Signed upload response: {}", response_text);
+
+        let result: Value = serde_json::from_str(&response_text)?;
+
+        if let Some(error) = result.get("error") {
+            let error_msg = error["message"].as_str().unwrap_or("Unknown error");
+            return Err(AppError::CloudinaryError(format!(
+                "Signed upload failed: {}",
+                error_msg
+            )));
+        }
+
+        let secure_url = result["secure_url"]
+            .as_str()
+            .ok_or_else(|| AppError::CloudinaryError("No secure URL".into()))?
+            .to_string();
+
+        let public_id = result["public_id"]
+            .as_str()
+            .ok_or_else(|| AppError::CloudinaryError("No public ID".into()))?
+            .to_string();
+
+        println!("✅ Signed upload successful!");
+        Ok((secure_url, public_id))
+    }
+
+    // Keep other methods as they are...
     pub async fn delete_image(&self, public_id: &str) -> Result<()> {
         let timestamp = chrono::Utc::now().timestamp().to_string();
-        
-        // Generate signature for delete
+
         let signature_data = format!(
             "public_id={}&timestamp={}{}",
             public_id, timestamp, self.api_secret
@@ -202,39 +288,27 @@ impl CloudinaryService {
         ];
 
         let client = reqwest::Client::new();
-        let response = client
-            .post(&delete_url)
-            .form(&params)
-            .send()
-            .await
-            .map_err(|e| AppError::CloudinaryError(format!("Delete failed: {}", e)))?;
+        let response = client.post(&delete_url).form(&params).send().await?;
 
-        let result: Value = response.json()
-            .await
-            .map_err(|e| AppError::CloudinaryError(format!("Failed to parse response: {}", e)))?;
+        let result: Value = response.json().await?;
 
         if result["result"] != "ok" {
-            return Err(AppError::CloudinaryError(
-                format!("Failed to delete image: {}", result["result"])
-            ));
+            return Err(AppError::CloudinaryError(format!(
+                "Failed to delete image: {}",
+                result["result"]
+            )));
         }
 
         Ok(())
     }
 
-    /// Generate URL with transformations
-    pub fn generate_transformed_url(
-        &self,
-        public_id: &str,
-        transformations: &str,
-    ) -> String {
+    pub fn generate_transformed_url(&self, public_id: &str, transformations: &str) -> String {
         format!(
             "https://res.cloudinary.com/{}/image/upload/{}/{}",
             self.cloud_name, transformations, public_id
         )
     }
 
-    /// Generate thumbnail URL
     pub fn generate_thumbnail_url(&self, public_id: &str, width: u32, height: u32) -> String {
         let transformations = format!("c_fill,w_{},h_{},q_auto", width, height);
         self.generate_transformed_url(public_id, &transformations)

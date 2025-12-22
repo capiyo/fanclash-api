@@ -49,5 +49,6 @@ md5 = "0.7"
 
 # Added for AppState
 redis = { version = "0.24", features = ["tokio-comp"] }
+infer = "0.13"
 
 # REMOVED: cloudinary = "0.8.2"  # Remove external crate
