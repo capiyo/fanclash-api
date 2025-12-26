@@ -10,45 +10,78 @@ codegen-units = 1
 strip = true
 panic = "abort"
 
+# ===== CORE DEPENDENCIES =====
 [dependencies]
-axum = { version = "0.7", features = ["macros"] }
-tokio = { version = "1.0", features = ["full"] }
+# Shuttle Framework
+shuttle-axum = "0.41.0"
+shuttle-runtime = "0.41.0"
+shuttle-mongodb = "0.41.0"
+shuttle-secrets = "0.41.0"
+
+# Web Framework
+axum = { version = "0.7.5", features = ["macros"] }
+tokio = { version = "1.35", features = ["full"] }
 tower = "0.4"
-tower-http = { version = "0.5", features = ["cors"] }
+tower-http = { version = "0.5.0", features = ["cors", "trace", "compression"] }
+
+# Serialization
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+serde_with = "3.8"
 
-chrono = { version = "0.4", features = ["serde"] }
+# Authentication & Security
 bcrypt = "0.15"
-jsonwebtoken = "9.0"
-uuid = { version = "1.0", features = ["v4", "serde"] }
+jsonwebtoken = "9.3"
+uuid = { version = "1.7", features = ["v4", "serde"] }
+base64 = "0.21"
+
+# Database
+mongodb = { version = "3.0.0", features = ["tokio-runtime"] }
+bson = { version = "3.0.0", features = ["chrono-0_4"] }
+sqlx = { version = "0.7", features = ["runtime-tokio-native-tls", "postgres"] }
+
+# Redis
+redis = { version = "0.24", features = ["tokio-comp", "aio"] }
+
+# File Upload & Processing
+multer = "2.1"
+bytes = "1.5"
+mime = "0.3"
+infer = "0.16"
+md5 = "0.7"
+sanitize-filename = "0.5"
+
+# HTTP Client
+reqwest = { version = "0.11.23", features = ["json", "multipart", "stream"] }
+
+# Async & Utilities
+futures = "0.3"
+futures-util = "0.3"
+async-trait = "0.1"
+tokio-util = { version = "0.7", features = ["io", "codec", "compat"] }
+
+# Validation
+validator = { version = "0.18", features = ["derive"] }
+
+# Time & Dates
+chrono = { version = "0.4.31", features = ["serde"] }
+
+# Error Handling
+thiserror = "2.0"
+anyhow = "1.0"
+
+# Logging & Tracing
 tracing = "0.1"
 tracing-subscriber = "0.3"
-multer = "2.1"
-tokio-util = { version = "0.7", features = ["io"] }
-bytes = "1.0"
+
+# ===== DEV DEPENDENCIES =====
+[dev-dependencies]
 dotenvy = "0.15"
-mime = "0.3"
-axum-extra = { version = "0.9", features = ["multipart"] }
-futures-util = "0.3"
-thiserror = "1.0"
-anyhow = "1.0.100"
 dotenv = "0.15"
-reqwest = { version = "0.11", features = ["json", "multipart"] }  # Added multipart
-base64 = "0.21"
-serde_with = "3.8"
-mongodb = "3.4.1"
-bson = { version = "2.8", features = ["chrono-0_4"] }
-validator = { version = "0.18", features = ["derive"] }
-futures = "0.3"
-async-trait = "0.1"
-sqlx = "0.9.0-alpha.1"
 
-# Added for CloudinaryService
-md5 = "0.7"
-
-# Added for AppState
-redis = { version = "0.24", features = ["tokio-comp"] }
-infer = "0.13"
-
-# REMOVED: cloudinary = "0.8.2"  # Remove external crate
+# ===== FEATURE FLAGS =====
+[features]
+default = []
+cloudinary = []  # Enable cloudinary features
+mpesa = []       # Enable MPesa payment features
+local-storage = [] # Enable local file storage
