@@ -3,6 +3,9 @@ use mongodb::bson;
 use mongodb::bson::oid::ObjectId;
 use serde::{Deserialize, Serialize};
 
+// likes...number
+// comments..number
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Post {
     #[serde(rename = "_id", skip_serializing_if = "Option::is_none")]
