@@ -26,7 +26,7 @@ pub async fn create_vote(
     State(state): State<AppState>,
     Json(payload): Json<CreateVote>,
 ) -> Result<Json<VoteResponse>> {
-    println!("🗳️ Creating vote for voter: {}", payload.voter_id);
+    println!("🗳️ Creating vote for user: {} ({})", payload.username, payload.voter_id);
 
     // Validate payload
     payload
@@ -74,6 +74,7 @@ pub async fn create_vote(
     let vote = Vote {
         id: None,
         voter_id: payload.voter_id.clone(),
+        username: payload.username.clone(),
         fixture_id: fixture_id.clone(),
         home_team: payload.home_team.clone(),
         away_team: payload.away_team.clone(),
@@ -94,7 +95,7 @@ pub async fn create_vote(
         .await?
         .ok_or_else(|| AppError::DocumentNotFound)?;
 
-    println!("✅ Vote created successfully: {}", vote_id);
+    println!("✅ Vote created successfully: {} by {}", vote_id, payload.username);
 
     Ok(Json(VoteResponse {
         success: true,
@@ -167,6 +168,7 @@ pub async fn bulk_create_votes(
                 let vote = Vote {
                     id: None,
                     voter_id: vote_data.voter_id.clone(),
+                    username: vote_data.username.clone(),
                     fixture_id: fixture_id.clone(),
                     home_team: vote_data.home_team.clone(),
                     away_team: vote_data.away_team.clone(),
@@ -361,7 +363,7 @@ pub async fn create_like(
     State(state): State<AppState>,
     Json(payload): Json<CreateLike>,
 ) -> Result<Json<LikeResponse>> {
-    println!("👍 Creating like for user: {}", payload.voter_id);
+    println!("👍 Creating like for user: {} ({})", payload.username, payload.voter_id);
 
     // Validate payload
     payload
@@ -392,7 +394,7 @@ pub async fn create_like(
             total_likes = collection.count_documents(fixture_filter).await? as i64;
             message = "Like removed successfully".to_string();
 
-            println!("👎 Like removed for fixture: {}", payload.fixture_id);
+            println!("👎 Like removed for fixture: {} by {}", payload.fixture_id, payload.username);
         } else {
             // User already liked and is trying to like again
             return Ok(Json(LikeResponse {
@@ -416,6 +418,7 @@ pub async fn create_like(
         let like = Like {
             id: None,
             voter_id: payload.voter_id.clone(),
+            username: payload.username.clone(),
             fixture_id: payload.fixture_id.clone(),
             action: payload.action.clone(),
             like_timestamp: BsonDateTime::from_chrono(Utc::now()),
@@ -429,7 +432,7 @@ pub async fn create_like(
         total_likes = collection.count_documents(fixture_filter).await? as i64;
         message = "Like added successfully".to_string();
 
-        println!("✅ Like created for fixture: {}", payload.fixture_id);
+        println!("✅ Like created for fixture: {} by {}", payload.fixture_id, payload.username);
     }
 
     Ok(Json(LikeResponse {
@@ -543,7 +546,7 @@ pub async fn create_comment(
     State(state): State<AppState>,
     Json(payload): Json<CreateComment>,
 ) -> Result<Json<CommentResponse>> {
-    println!("💬 Creating comment for user: {}", payload.voter_id);
+    println!("💬 Creating comment for user: {} ({})", payload.username, payload.voter_id);
 
     // Validate payload
     payload
@@ -558,6 +561,7 @@ pub async fn create_comment(
     let comment = Comment {
         id: None,
         voter_id: payload.voter_id.clone(),
+        username: payload.username.clone(),
         fixture_id: payload.fixture_id.clone(),
         comment: payload.comment.clone(),
         timestamp: payload.timestamp.clone(),
@@ -577,7 +581,7 @@ pub async fn create_comment(
         .await?
         .ok_or_else(|| AppError::DocumentNotFound)?;
 
-    println!("✅ Comment created successfully: {}", comment_id);
+    println!("✅ Comment created successfully: {} by {}", comment_id, payload.username);
 
     Ok(Json(CommentResponse {
         success: true,

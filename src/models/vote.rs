@@ -1,3 +1,4 @@
+
 use bson::{oid::ObjectId, DateTime as BsonDateTime};
 use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
@@ -12,6 +13,10 @@ pub struct Vote {
     #[serde(rename = "voterId")]
     #[validate(length(min = 1, message = "Voter ID is required"))]
     pub voter_id: String,
+
+    #[serde(rename = "username")]
+    #[validate(length(min = 1, message = "Username is required"))]
+    pub username: String,
 
     #[serde(rename = "fixtureId")]
     #[validate(length(min = 1, message = "Fixture ID is required"))]
@@ -45,6 +50,10 @@ pub struct CreateVote {
     #[validate(length(min = 1, message = "Voter ID is required"))]
     pub voter_id: String,
 
+    #[serde(rename = "username")]
+    #[validate(length(min = 1, message = "Username is required"))]
+    pub username: String,
+
     #[serde(rename = "fixtureId")]
     #[validate(length(min = 1, message = "Fixture ID is required"))]
     pub fixture_id: String,
@@ -76,6 +85,10 @@ pub struct Like {
     #[validate(length(min = 1, message = "Voter ID is required"))]
     pub voter_id: String,
 
+    #[serde(rename = "username")]
+    #[validate(length(min = 1, message = "Username is required"))]
+    pub username: String,
+
     #[serde(rename = "fixtureId")]
     #[validate(length(min = 1, message = "Fixture ID is required"))]
     pub fixture_id: String,
@@ -98,6 +111,10 @@ pub struct CreateLike {
     #[validate(length(min = 1, message = "Voter ID is required"))]
     pub voter_id: String,
 
+    #[serde(rename = "username")]
+    #[validate(length(min = 1, message = "Username is required"))]
+    pub username: String,
+
     #[serde(rename = "fixtureId")]
     #[validate(length(min = 1, message = "Fixture ID is required"))]
     pub fixture_id: String,
@@ -116,6 +133,10 @@ pub struct Comment {
     #[serde(rename = "voterId")]
     #[validate(length(min = 1, message = "Voter ID is required"))]
     pub voter_id: String,
+
+    #[serde(rename = "username")]
+    #[validate(length(min = 1, message = "Username is required"))]
+    pub username: String,
 
     #[serde(rename = "fixtureId")]
     #[validate(length(min = 1, message = "Fixture ID is required"))]
@@ -151,6 +172,10 @@ pub struct CreateComment {
     #[serde(rename = "voterId")]
     #[validate(length(min = 1, message = "Voter ID is required"))]
     pub voter_id: String,
+
+    #[serde(rename = "username")]
+    #[validate(length(min = 1, message = "Username is required"))]
+    pub username: String,
 
     #[serde(rename = "fixtureId")]
     #[validate(length(min = 1, message = "Fixture ID is required"))]
@@ -479,6 +504,9 @@ pub struct UserActivitySummary {
     #[serde(rename = "voterId")]
     pub voter_id: String,
 
+    #[serde(rename = "username")]
+    pub username: String,
+
     #[serde(rename = "totalVotes")]
     pub total_votes: i64,
 
@@ -565,6 +593,9 @@ pub struct CommentWithUser {
     #[serde(rename = "voterId")]
     pub voter_id: String,
 
+    #[serde(rename = "username")]
+    pub username: String,
+
     #[serde(rename = "fixtureId")]
     pub fixture_id: String,
     pub comment: String,
@@ -594,6 +625,9 @@ pub struct LikeWithUser {
 
     #[serde(rename = "voterId")]
     pub voter_id: String,
+
+    #[serde(rename = "username")]
+    pub username: String,
 
     #[serde(rename = "fixtureId")]
     pub fixture_id: String,
@@ -669,6 +703,10 @@ pub struct PopularFixture {
 pub struct UserVoteHistory {
     #[serde(rename = "voterId")]
     pub voter_id: String,
+
+    #[serde(rename = "username")]
+    pub username: String,
+
     pub votes: Vec<UserVoteEntry>,
 
     #[serde(rename = "totalVotes")]
@@ -699,11 +737,12 @@ pub struct UserVoteEntry {
 
 // Helper function to create a Vote from CreateVote
 impl Vote {
-    pub fn from_create_vote(create_vote: CreateVote, fixture_id: String) -> Self {
+    pub fn from_create_vote(create_vote: CreateVote) -> Self {
         Vote {
             id: None,
             voter_id: create_vote.voter_id,
-            fixture_id,
+            username: create_vote.username,
+            fixture_id: create_vote.fixture_id,
             home_team: create_vote.home_team,
             away_team: create_vote.away_team,
             draw: create_vote.draw,
@@ -720,6 +759,7 @@ impl Like {
         Like {
             id: None,
             voter_id: create_like.voter_id,
+            username: create_like.username,
             fixture_id: create_like.fixture_id,
             action: create_like.action,
             like_timestamp: BsonDateTime::from_millis(Utc::now().timestamp_millis()),
@@ -736,6 +776,7 @@ impl Comment {
         Ok(Comment {
             id: None,
             voter_id: create_comment.voter_id,
+            username: create_comment.username,
             fixture_id: create_comment.fixture_id,
             comment: create_comment.comment,
             timestamp: create_comment.timestamp,
