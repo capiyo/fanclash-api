@@ -1,5 +1,5 @@
 pub mod game;
-pub mod post;
+//pub mod post;
 pub mod user;
 
 pub(crate) mod bets;
@@ -10,3 +10,4 @@ pub(crate) mod pledges;
 pub(crate) mod transaction;
 pub(crate) mod user_profile;
 pub(crate) mod vote;
+pub(crate) mod posta;

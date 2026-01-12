@@ -81,6 +81,7 @@ pub enum AppError {
 }
 
 impl IntoResponse for AppError {
+
     fn into_response(self) -> Response {
         let (status, error_message) = match &self {
             AppError::MongoDB(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Database error".to_string()),

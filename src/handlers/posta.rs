@@ -14,7 +14,7 @@ use serde_json::{json, Value as JsonValue};
 use uuid::Uuid;
 
 use crate::errors::{AppError, Result};
-use crate::models::post::{Post, PostResponse};
+use crate::models::posta::{Post, PostResponse, Comment, CommentResponse, LikeRequest, CreateCommentRequest, UpdateCommentRequest};
 use crate::services::cloudinary::CloudinaryService;
 use crate::state::AppState;
 
@@ -73,13 +73,61 @@ fn bson_to_json_value(bson: &Bson) -> JsonValue {
     }
 }
 
-/// Helper function to convert MongoDB Document to serde_json::Value
 fn document_to_json(doc: Document) -> JsonValue {
     let mut map = serde_json::Map::new();
     for (key, value) in doc {
         map.insert(key, bson_to_json_value(&value));
     }
     JsonValue::Object(map)
+}
+
+// ========== ORIGINAL POST HANDLERS ==========
+
+pub async fn get_posts(
+    State(state): State<AppState>,
+    Query(params): Query<PaginationParams>,
+) -> Result<Json<serde_json::Value>> {
+    let collection: Collection<Post> = state.db.collection("posts");
+
+    let mut filter = doc! {};
+    if let Some(user_id) = params.user_id {
+        filter.insert("user_id", user_id);
+    }
+
+    let page = params.page.unwrap_or(1).max(1);
+    let limit = params
+        .limit
+        .unwrap_or(DEFAULT_PAGE_SIZE)
+        .min(MAX_PAGE_SIZE)
+        .max(1);
+    let skip = (page - 1) * limit;
+
+    let options = FindOptions::builder()
+        .sort(doc! { "created_at": -1 })
+        .skip(skip as u64)
+        .limit(limit)
+        .build();
+
+    let total_count = collection.count_documents(filter.clone()).await? as i64;
+    let total_pages = (total_count as f64 / limit as f64).ceil() as i64;
+
+    let cursor = collection.find(filter).await?;
+    let posts: Vec<Post> = cursor.try_collect().await?;
+
+    let post_responses: Vec<PostResponse> = posts.into_iter().map(PostResponse::from).collect();
+
+    Ok(Json(json!({
+        "success": true,
+        "posts": post_responses,
+        "pagination": {
+            "page": page,
+            "limit": limit,
+            "total_count": total_count,
+            "total_pages": total_pages,
+            "has_next": page < total_pages,
+            "has_previous": page > 1
+        }
+    })))
 }
 
 pub async fn create_post(
@@ -92,7 +140,6 @@ pub async fn create_post(
     let mut image_data = None;
     let mut file_extension = None;
 
-    // Process multipart form data
     while let Some(field) = multipart
         .next_field()
         .await
@@ -125,12 +172,10 @@ pub async fn create_post(
                     AppError::Multipart(format!("Failed to read image data: {}", e))
                 })?;
 
-                // Validate file size
                 if data.len() as u64 > MAX_FILE_SIZE {
                     return Err(AppError::ImageTooLarge);
                 }
 
-                // Validate file type
                 let ext = std::path::Path::new(&file_name)
                     .extension()
                     .and_then(|ext| ext.to_str())
@@ -144,13 +189,10 @@ pub async fn create_post(
                 file_extension = Some(ext);
                 image_data = Some(data.to_vec());
             }
-            _ => {
-                continue;
-            }
+            _ => continue,
         }
     }
 
-    // Validate required fields
     if user_id.trim().is_empty() {
         return Err(AppError::InvalidUserData);
     }
@@ -159,28 +201,12 @@ pub async fn create_post(
         return Err(AppError::InvalidUserData);
     }
 
-    // Extract values from Option with proper error handling
     let image_data = image_data.ok_or(AppError::NoImageProvided)?;
     let file_extension = file_extension.ok_or(AppError::InvalidImageFormat)?;
 
-    println!("📊 Post data received:");
-    println!("   User ID: {}", user_id);
-    println!("   User Name: {}", user_name);
-    println!("   Caption: {}", caption);
-    println!("   Image size: {} bytes", image_data.len());
-    println!("   File extension: {}", file_extension);
-
-    // Use Cloudinary service from AppState
     let cloudinary_service = &state.cloudinary;
-
-    // Generate unique public ID for Cloudinary
     let public_id = format!("post_{}_{}", user_id, Uuid::new_v4());
 
-    println!("🌐 Starting Cloudinary upload...");
-    println!("   Public ID: {}", public_id);
-    println!("   Folder: fanclash/posts/{}", user_id);
-
-    // Upload to Cloudinary with error handling and fallback
     let (image_url, cloudinary_public_id) = match cloudinary_service
         .upload_image_with_preset(
             &image_data,
@@ -189,15 +215,8 @@ pub async fn create_post(
         )
         .await
     {
-        Ok(result) => {
-            println!("✅ Cloudinary upload successful via upload preset");
-            result
-        }
+        Ok(result) => result,
         Err(preset_error) => {
-            println!("⚠️ Upload preset failed: {}", preset_error);
-            println!("🔄 Trying signed upload as fallback...");
-
-            // Try signed upload as fallback
             cloudinary_service
                 .upload_image_signed(
                     &image_data,
@@ -211,13 +230,7 @@ pub async fn create_post(
         }
     };
 
-    println!("✅ Cloudinary upload completed:");
-    println!("   Image URL: {}", image_url);
-    println!("   Cloudinary Public ID: {}", cloudinary_public_id);
-
-    // Create post in MongoDB
     let collection: Collection<Post> = state.db.collection("posts");
-
     let now = Utc::now();
     let post = Post {
         _id: Some(ObjectId::new()),
@@ -227,92 +240,47 @@ pub async fn create_post(
         image_url: image_url.clone(),
         cloudinary_public_id: cloudinary_public_id.clone(),
         image_format: file_extension.clone(),
+        likes_count: 0,
+        comments_count: 0,
+        shares_count: 0,
+        liked_by: Vec::new(),
+        is_liked: false,
+        is_saved: false,
         created_at: now,
         updated_at: now,
     };
 
-    println!("📝 Saving to MongoDB...");
+    collection.insert_one(&post).await?;
 
-    match collection.insert_one(&post).await {
-        Ok(insert_result) => {
-            println!("✅ MongoDB insert successful");
-            println!("   Inserted ID: {:?}", insert_result.inserted_id);
-        }
-        Err(e) => {
-            println!("❌ MongoDB insert failed: {}", e);
-            return Err(AppError::from(e));
-        }
-    }
-
-    let response = json!({
-        "success": true,
-        "message": "Post created successfully",
-        "post": {
-            "id": post._id.unwrap().to_hex(),
-            "image_url": image_url,
-            "caption": caption,
-            "user_name": user_name,
-            "user_id": user_id,
-            "created_at": post.created_at.to_rfc3339(),
-            "updated_at": post.updated_at.to_rfc3339()
-        }
-    });
-
-    println!("✅ API Response ready: {:?}", response);
-
-    Ok(Json(response))
-}
-
-pub async fn get_posts(
-    State(state): State<AppState>,
-    Query(params): Query<PaginationParams>,
-) -> Result<Json<serde_json::Value>> {
-    let collection: Collection<Post> = state.db.collection("posts");
-
-    // Build filter based on query params
-    let mut filter = doc! {};
-
-    if let Some(user_id) = params.user_id {
-        filter.insert("user_id", user_id);
-    }
-
-    // Pagination
-    let page = params.page.unwrap_or(1).max(1);
-    let limit = params
-        .limit
-        .unwrap_or(DEFAULT_PAGE_SIZE)
-        .min(MAX_PAGE_SIZE)
-        .max(1);
-    let skip = (page - 1) * limit;
-
-    let options = FindOptions::builder()
-        .sort(doc! { "created_at": -1 })
-        .skip(skip as u64)
-        .limit(limit)
-        .build();
-
-    // Get total count for pagination metadata
-    let total_count = collection.count_documents(filter.clone()).await? as i64;
-    let total_pages = (total_count as f64 / limit as f64).ceil() as i64;
-
-    // Fetch posts
-    let cursor = collection.find(filter).await?;
-    let posts: Vec<Post> = cursor.try_collect().await?;
-
-    let post_responses: Vec<PostResponse> = posts.into_iter().map(PostResponse::from).collect();
+    let post_response = PostResponse::from(post);
 
     Ok(Json(json!({
         "success": true,
-        "posts": post_responses,
-        "pagination": {
-            "page": page,
-            "limit": limit,
-            "total_count": total_count,
-            "total_pages": total_pages,
-            "has_next": page < total_pages,
-            "has_previous": page > 1
-        }
+        "message": "Post created successfully",
+        "post": post_response
     })))
+}
+
+pub async fn get_post_by_id(
+    State(state): State<AppState>,
+    Path(post_id): Path<String>,
+) -> Result<Json<serde_json::Value>> {
+    let collection: Collection<Post> = state.db.collection("posts");
+
+    let object_id = ObjectId::parse_str(&post_id).map_err(|_| AppError::PostNotFound)?;
+    let filter = doc! { "_id": object_id };
+    let post = collection.find_one(filter).await?;
+
+    match post {
+        Some(post) => {
+            let post_response = PostResponse::from(post);
+            Ok(Json(json!({
+                "success": true,
+                "post": post_response
+            })))
+        }
+        None => Err(AppError::PostNotFound),
+    }
 }
 
 pub async fn get_posts_by_user(
@@ -322,10 +290,8 @@ pub async fn get_posts_by_user(
 ) -> Result<Json<serde_json::Value>> {
     let collection: Collection<Post> = state.db.collection("posts");
 
-    // Build filter for specific user
     let filter = doc! { "user_id": &user_id };
 
-    // Pagination
     let page = params.page.unwrap_or(1).max(1);
     let limit = params
         .limit
@@ -340,11 +306,9 @@ pub async fn get_posts_by_user(
         .limit(limit)
         .build();
 
-    // Get total count for pagination metadata
     let total_count = collection.count_documents(filter.clone()).await? as i64;
     let total_pages = (total_count as f64 / limit as f64).ceil() as i64;
 
-    // Fetch posts
     let cursor = collection.find(filter).await?;
     let posts: Vec<Post> = cursor.try_collect().await?;
 
@@ -365,165 +329,6 @@ pub async fn get_posts_by_user(
     })))
 }
 
-pub async fn get_post_by_id(
-    State(state): State<AppState>,
-    Path(post_id): Path<String>,
-) -> Result<Json<serde_json::Value>> {
-    let collection: Collection<Post> = state.db.collection("posts");
-
-    let object_id = ObjectId::parse_str(&post_id).map_err(|_| AppError::PostNotFound)?;
-
-    let filter = doc! { "_id": object_id };
-
-    let post = collection.find_one(filter).await?;
-
-    match post {
-        Some(post) => {
-            let post_response = PostResponse::from(post);
-
-            Ok(Json(json!({
-                "success": true,
-                "post": post_response
-            })))
-        }
-        None => Err(AppError::PostNotFound),
-    }
-}
-
-pub async fn update_post(
-    State(state): State<AppState>,
-    Path(post_id): Path<String>,
-    mut multipart: Multipart,
-) -> Result<Json<serde_json::Value>> {
-    let collection: Collection<Post> = state.db.collection("posts");
-
-    let object_id = ObjectId::parse_str(&post_id).map_err(|_| AppError::PostNotFound)?;
-
-    // First, get the existing post
-    let filter = doc! { "_id": object_id };
-    let existing_post = collection.find_one(filter.clone()).await?;
-
-    let existing_post = existing_post.ok_or(AppError::PostNotFound)?;
-
-    let mut caption = existing_post.caption.clone();
-    let mut image_data = None;
-    let mut file_extension = None;
-    let mut update_image = false;
-
-    // Process multipart form data for update
-    while let Some(field) = multipart
-        .next_field()
-        .await
-        .map_err(|e| AppError::Multipart(format!("Failed to process multipart field: {}", e)))?
-    {
-        let field_name = field.name().unwrap_or("").to_string();
-
-        match field_name.as_str() {
-            "caption" => {
-                let new_caption = field
-                    .text()
-                    .await
-                    .map_err(|e| AppError::Multipart(format!("Failed to read caption: {}", e)))?;
-                if !new_caption.trim().is_empty() {
-                    caption = new_caption;
-                }
-            }
-            "image" => {
-                let file_name = field.file_name().unwrap_or("image").to_string();
-                let data = field.bytes().await.map_err(|e| {
-                    AppError::Multipart(format!("Failed to read image data: {}", e))
-                })?;
-
-                // Validate file size
-                if data.len() as u64 > MAX_FILE_SIZE {
-                    return Err(AppError::ImageTooLarge);
-                }
-
-                // Validate file type
-                let ext = std::path::Path::new(&file_name)
-                    .extension()
-                    .and_then(|ext| ext.to_str())
-                    .unwrap_or("")
-                    .to_lowercase();
-
-                if !ALLOWED_EXTENSIONS.contains(&ext.as_str()) {
-                    return Err(AppError::InvalidImageFormat);
-                }
-
-                file_extension = Some(ext);
-                image_data = Some(data.to_vec());
-                update_image = true;
-            }
-            _ => {
-                continue;
-            }
-        }
-    }
-
-    let mut update_doc = doc! {
-        "updated_at": Utc::now(),
-        "caption": &caption
-    };
-
-    // Use Cloudinary service from AppState
-    let cloudinary_service = &state.cloudinary;
-    let mut new_image_url = existing_post.image_url.clone();
-    let mut new_cloudinary_public_id = existing_post.cloudinary_public_id.clone();
-    let mut new_image_format = existing_post.image_format.clone();
-
-    // If updating image, upload new one to Cloudinary
-    if update_image {
-        let image_data = image_data.ok_or(AppError::NoImageProvided)?;
-        let file_extension = file_extension.ok_or(AppError::InvalidImageFormat)?;
-
-        // Upload new image to Cloudinary (use same public ID to replace)
-        let folder = format!("fanclash/posts/{}", existing_post.user_id);
-        let (uploaded_url, uploaded_public_id) = cloudinary_service
-            .upload_image_with_preset(
-                &image_data,
-                &folder,
-                Some(&existing_post.cloudinary_public_id),
-            )
-            .await
-            .map_err(|e| AppError::invalid_data(format!("Failed to upload image: {}", e)))?;
-
-        new_image_url = uploaded_url;
-        new_cloudinary_public_id = uploaded_public_id;
-        new_image_format = file_extension;
-
-        update_doc.insert("image_url", &new_image_url);
-        update_doc.insert("cloudinary_public_id", &new_cloudinary_public_id);
-        update_doc.insert("image_format", &new_image_format);
-    }
-
-    // Update the post in MongoDB
-    let update = doc! {
-        "$set": update_doc
-    };
-
-    let result = collection.update_one(filter, update).await?;
-
-    if result.modified_count == 0 {
-        return Ok(Json(json!({
-            "success": true,
-            "message": "Post updated successfully",
-            "changes": false
-        })));
-    }
-
-    Ok(Json(json!({
-        "success": true,
-        "message": "Post updated successfully",
-        "changes": true,
-        "post": {
-            "id": post_id,
-            "image_url": new_image_url,
-            "caption": caption,
-            "updated_at": Utc::now().to_rfc3339()
-        }
-    })))
-}
-
 pub async fn update_post_caption(
     State(state): State<AppState>,
     Path(post_id): Path<String>,
@@ -532,7 +337,6 @@ pub async fn update_post_caption(
     let collection: Collection<Post> = state.db.collection("posts");
 
     let object_id = ObjectId::parse_str(&post_id).map_err(|_| AppError::PostNotFound)?;
-
     let filter = doc! { "_id": object_id };
     let update = doc! {
         "$set": {
@@ -561,37 +365,17 @@ pub async fn delete_post(
     let collection: Collection<Post> = state.db.collection("posts");
 
     let object_id = ObjectId::parse_str(&post_id).map_err(|_| AppError::PostNotFound)?;
-
     let filter = doc! { "_id": object_id };
 
-    // First get the post to find the Cloudinary public ID
     let post = collection.find_one(filter.clone()).await?;
 
     match post {
         Some(post) => {
-            // Use Cloudinary service from AppState
             let cloudinary_service = &state.cloudinary;
-
-            // Try to delete from Cloudinary
-            match cloudinary_service
+            let _ = cloudinary_service
                 .delete_image(&post.cloudinary_public_id)
-                .await
-            {
-                Ok(_) => {
-                    println!(
-                        "Successfully deleted image from Cloudinary: {}",
-                        post.cloudinary_public_id
-                    );
-                }
-                Err(e) => {
-                    eprintln!(
-                        "Failed to delete from Cloudinary (continuing with DB delete): {}",
-                        e
-                    );
-                }
-            }
+                .await;
 
-            // Delete from MongoDB
             let delete_result = collection.delete_one(filter).await?;
 
             if delete_result.deleted_count == 0 {
@@ -616,7 +400,6 @@ pub async fn delete_posts_by_user(
 
     let filter = doc! { "user_id": &user_id };
 
-    // Get all posts by user to delete from Cloudinary
     let cursor = collection.find(filter.clone()).await?;
     let posts: Vec<Post> = cursor.try_collect().await?;
 
@@ -628,27 +411,16 @@ pub async fn delete_posts_by_user(
         })));
     }
 
-    // Use Cloudinary service from AppState
     let cloudinary_service = &state.cloudinary;
     let mut deleted_from_cloudinary = 0;
 
-    // Delete all images from Cloudinary
     for post in &posts {
-        match cloudinary_service
+        let _ = cloudinary_service
             .delete_image(&post.cloudinary_public_id)
-            .await
-        {
-            Ok(_) => {
-                deleted_from_cloudinary += 1;
-                println!("Deleted from Cloudinary: {}", post.cloudinary_public_id);
-            }
-            Err(e) => {
-                eprintln!("Failed to delete from Cloudinary: {}", e);
-            }
-        }
+            .await;
+        deleted_from_cloudinary += 1;
     }
 
-    // Delete all posts from MongoDB
     let delete_result = collection.delete_many(filter).await?;
 
     Ok(Json(json!({
@@ -667,13 +439,11 @@ pub async fn get_post_thumbnail(
     let collection: Collection<Post> = state.db.collection("posts");
 
     let object_id = ObjectId::parse_str(&post_id).map_err(|_| AppError::PostNotFound)?;
-
     let filter = doc! { "_id": object_id };
     let post = collection.find_one(filter).await?;
 
     match post {
         Some(post) => {
-            // Use Cloudinary service from AppState
             let cloudinary_service = &state.cloudinary;
             let thumbnail_url = cloudinary_service.generate_thumbnail_url(
                 &post.cloudinary_public_id,
@@ -703,13 +473,11 @@ pub async fn get_post_with_transform(
     let collection: Collection<Post> = state.db.collection("posts");
 
     let object_id = ObjectId::parse_str(&post_id).map_err(|_| AppError::PostNotFound)?;
-
     let filter = doc! { "_id": object_id };
     let post = collection.find_one(filter).await?;
 
     match post {
         Some(post) => {
-            // Use Cloudinary service from AppState
             let cloudinary_service = &state.cloudinary;
             let transformed_url = cloudinary_service
                 .generate_transformed_url(&post.cloudinary_public_id, &transformations);
@@ -732,13 +500,11 @@ pub async fn search_posts(
 ) -> Result<Json<serde_json::Value>> {
     let collection: Collection<Post> = state.db.collection("posts");
 
-    // Clone the params for later use in response
     let search_query = params.q.clone();
     let search_user_id = params.user_id.clone();
     let search_start_date = params.start_date;
     let search_end_date = params.end_date;
 
-    // Build search query
     let mut filter = doc! {};
 
     if let Some(query) = params.q {
@@ -763,7 +529,6 @@ pub async fn search_posts(
         filter.insert("created_at", doc! { "$lte": end_date });
     }
 
-    // Pagination
     let page = params.page.unwrap_or(1).max(1);
     let limit = params
         .limit
@@ -778,11 +543,9 @@ pub async fn search_posts(
         .limit(limit)
         .build();
 
-    // Get total count
     let total_count = collection.count_documents(filter.clone()).await? as i64;
     let total_pages = (total_count as f64 / limit as f64).ceil() as i64;
 
-    // Fetch posts
     let cursor = collection.find(filter).await?;
     let posts: Vec<Post> = cursor.try_collect().await?;
 
@@ -813,16 +576,13 @@ pub async fn search_posts(
 pub async fn get_post_stats(State(state): State<AppState>) -> Result<Json<serde_json::Value>> {
     let collection: Collection<Post> = state.db.collection("posts");
 
-    // Total posts count
     let total_posts: u64 = collection.count_documents(doc! {}).await?;
 
-    // Posts by day (last 7 days)
     let seven_days_ago = Utc::now() - chrono::Duration::days(7);
     let posts_last_week: u64 = collection
         .count_documents(doc! { "created_at": { "$gte": seven_days_ago } })
         .await?;
 
-    // Posts per user (top 10)
     let pipeline = vec![
         doc! {
             "$group": {
@@ -837,11 +597,8 @@ pub async fn get_post_stats(State(state): State<AppState>) -> Result<Json<serde_
 
     let cursor = collection.aggregate(pipeline).await?;
     let top_users_docs: Vec<Document> = cursor.try_collect().await?;
-
-    // Convert BSON documents to JSON values using our helper function
     let top_users: Vec<JsonValue> = top_users_docs.into_iter().map(document_to_json).collect();
 
-    // Posts by hour of day
     let hour_pipeline = vec![
         doc! {
             "$group": {
@@ -854,7 +611,6 @@ pub async fn get_post_stats(State(state): State<AppState>) -> Result<Json<serde_
 
     let cursor = collection.aggregate(hour_pipeline).await?;
     let posts_by_hour_docs: Vec<Document> = cursor.try_collect().await?;
-
     let posts_by_hour: Vec<JsonValue> = posts_by_hour_docs
         .into_iter()
         .map(document_to_json)
@@ -872,7 +628,6 @@ pub async fn get_post_stats(State(state): State<AppState>) -> Result<Json<serde_
     })))
 }
 
-// Replace the get_user_post_stats function with this fixed version:
 pub async fn get_user_post_stats(
     State(state): State<AppState>,
     Path(user_id): Path<String>,
@@ -880,25 +635,11 @@ pub async fn get_user_post_stats(
     let collection: Collection<Post> = state.db.collection("posts");
 
     let filter = doc! { "user_id": &user_id };
-
-    // Total posts by user
     let total_posts: u64 = collection.count_documents(filter.clone()).await?;
 
-    // Latest post - using FindOptions with sort
-    let latest_options = mongodb::options::FindOneOptions::builder()
-        .sort(doc! { "created_at": -1 })
-        .build();
-
     let latest_post = collection.find_one(filter.clone()).await?;
-
-    // First post - using FindOptions with sort
-    let first_options = mongodb::options::FindOneOptions::builder()
-        .sort(doc! { "created_at": 1 })
-        .build();
-
     let first_post = collection.find_one(filter.clone()).await?;
 
-    // Posts per month
     let pipeline = vec![
         doc! { "$match": filter.clone() },
         doc! {
@@ -915,7 +656,6 @@ pub async fn get_user_post_stats(
 
     let cursor = collection.aggregate(pipeline).await?;
     let posts_by_month_docs: Vec<Document> = cursor.try_collect().await?;
-
     let posts_by_month: Vec<JsonValue> = posts_by_month_docs
         .into_iter()
         .map(document_to_json)
@@ -932,4 +672,416 @@ pub async fn get_user_post_stats(
             "timestamp": Utc::now().to_rfc3339()
         }
     })))
+}
+
+// ========== NEW LIKE/COMMENT HANDLERS ==========
+
+pub async fn like_post(
+    State(state): State<AppState>,
+    Path(post_id): Path<String>,
+    Json(payload): Json<LikeRequest>,
+) -> Result<Json<serde_json::Value>> {
+    let collection: Collection<Post> = state.db.collection("posts");
+
+    let object_id = ObjectId::parse_str(&post_id).map_err(|_| AppError::PostNotFound)?;
+
+    let post = match collection.find_one(doc! { "_id": object_id }).await? {
+        Some(post) => post,
+        None => return Err(AppError::PostNotFound),
+    };
+
+    if post.liked_by.contains(&payload.user_id) {
+        let post_response = PostResponse::from(post);
+        return Ok(Json(json!({
+            "success": true,
+            "message": "Post already liked by user",
+            "post": post_response
+        })));
+    }
+
+    let update_doc = doc! {
+        "$inc": { "likes_count": 1 },
+        "$push": { "liked_by": &payload.user_id },
+        "$set": { "is_liked": true, "updated_at": Utc::now() }
+    };
+
+    match collection.update_one(doc! { "_id": object_id }, update_doc).await {
+        Ok(_) => {
+            match collection.find_one(doc! { "_id": object_id }).await? {
+                Some(updated_post) => {
+                    let post_response = PostResponse::from(updated_post);
+                    Ok(Json(json!({
+                        "success": true,
+                        "message": "Post liked successfully",
+                        "post": post_response
+                    })))
+                }
+                None => Err(AppError::PostNotFound),
+            }
+        }
+        Err(e) => {
+            eprintln!("Error liking post: {}", e);
+            Err(AppError::from(e))
+        }
+    }
+}
+
+pub async fn unlike_post(
+    State(state): State<AppState>,
+    Path(post_id): Path<String>,
+    Json(payload): Json<LikeRequest>,
+) -> Result<Json<serde_json::Value>> {
+    let collection: Collection<Post> = state.db.collection("posts");
+
+    let object_id = ObjectId::parse_str(&post_id).map_err(|_| AppError::PostNotFound)?;
+
+    let post = match collection.find_one(doc! { "_id": object_id }).await? {
+        Some(post) => post,
+        None => return Err(AppError::PostNotFound),
+    };
+
+    if !post.liked_by.contains(&payload.user_id) {
+        let post_response = PostResponse::from(post);
+        return Ok(Json(json!({
+            "success": true,
+            "message": "Post not liked by user",
+            "post": post_response
+        })));
+    }
+
+    let update_doc = doc! {
+        "$inc": { "likes_count": -1 },
+        "$pull": { "liked_by": &payload.user_id },
+        "$set": { "is_liked": false, "updated_at": Utc::now() }
+    };
+
+    match collection.update_one(doc! { "_id": object_id }, update_doc).await {
+        Ok(_) => {
+            match collection.find_one(doc! { "_id": object_id }).await? {
+                Some(updated_post) => {
+                    let post_response = PostResponse::from(updated_post);
+                    Ok(Json(json!({
+                        "success": true,
+                        "message": "Post unliked successfully",
+                        "post": post_response
+                    })))
+                }
+                None => Err(AppError::PostNotFound),
+            }
+        }
+        Err(e) => {
+            eprintln!("Error unliking post: {}", e);
+            Err(AppError::from(e))
+        }
+    }
+}
+
+pub async fn get_comments(
+    State(state): State<AppState>,
+    Path(post_id): Path<String>,
+    Query(params): Query<PaginationParams>,
+) -> Result<Json<serde_json::Value>> {
+    let collection: Collection<Comment> = state.db.collection("comments");
+
+    let page = params.page.unwrap_or(1).max(1);
+    let limit = params
+        .limit
+        .unwrap_or(DEFAULT_PAGE_SIZE)
+        .min(MAX_PAGE_SIZE)
+        .max(1);
+    let skip = (page - 1) * limit;
+
+    let options = FindOptions::builder()
+        .sort(doc! { "created_at": -1 })
+        .skip(skip as u64)
+        .limit(limit)
+        .build();
+
+    let total_count = collection.count_documents(doc! { "post_id": &post_id }).await? as i64;
+    let total_pages = (total_count as f64 / limit as f64).ceil() as i64;
+
+    let cursor = collection.find(doc! { "post_id": &post_id }).await?;
+    let comments: Vec<Comment> = cursor.try_collect().await?;
+
+    let comment_responses: Vec<CommentResponse> = comments.into_iter().map(CommentResponse::from).collect();
+
+    Ok(Json(json!({
+        "success": true,
+        "comments": comment_responses,
+        "post_id": post_id,
+        "pagination": {
+            "page": page,
+            "limit": limit,
+            "total_count": total_count,
+            "total_pages": total_pages,
+            "has_next": page < total_pages,
+            "has_previous": page > 1
+        }
+    })))
+}
+
+pub async fn create_comment(
+    State(state): State<AppState>,
+    Path(post_id): Path<String>,
+    Json(payload): Json<CreateCommentRequest>,
+) -> Result<Json<serde_json::Value>> {
+    if payload.comment.trim().is_empty() {
+        return Err(AppError::invalid_data("Comment cannot be empty"));
+    }
+
+    let comment_collection: Collection<Comment> = state.db.collection("comments");
+    let post_collection: Collection<Post> = state.db.collection("posts");
+
+    let post_object_id = ObjectId::parse_str(&post_id).map_err(|_| AppError::PostNotFound)?;
+    let post_exists = post_collection.find_one(doc! { "_id": post_object_id }).await?;
+    if post_exists.is_none() {
+        return Err(AppError::PostNotFound);
+    }
+
+    let existing_comment = comment_collection.find_one(
+        doc! {
+            "post_id": &post_id,
+            "user_id": &payload.user_id
+        }
+    ).await?;
+
+    if existing_comment.is_some() {
+        return Err(AppError::invalid_data("You have already commented on this post. You can edit your existing comment."));
+    }
+
+    let now = Utc::now();
+    let comment = Comment {
+        _id: Some(ObjectId::new()),
+        post_id: post_id.clone(),
+        user_id: payload.user_id.clone(),
+        user_name: payload.user_name.clone(),
+        comment: payload.comment.clone(),
+        likes_count: 0,
+        liked_by: Vec::new(),
+        is_liked: false,
+        created_at: now,
+        updated_at: now,
+    };
+
+    match comment_collection.insert_one(&comment).await {
+        Ok(_) => {
+            let _ = post_collection.update_one(
+                doc! { "_id": post_object_id },
+                doc! { "$inc": { "comments_count": 1 }, "$set": { "updated_at": now } }
+            ).await;
+
+            let comment_response = CommentResponse::from(comment);
+
+            Ok(Json(json!({
+                "success": true,
+                "message": "Comment created successfully",
+                "comment": comment_response
+            })))
+        }
+        Err(e) => {
+            eprintln!("Error creating comment: {}", e);
+            Err(AppError::from(e))
+        }
+    }
+}
+
+pub async fn update_comment(
+    State(state): State<AppState>,
+    Path(comment_id): Path<String>,
+    Json(payload): Json<UpdateCommentRequest>,
+) -> Result<Json<serde_json::Value>> {
+    if payload.comment.trim().is_empty() {
+        return Err(AppError::invalid_data("Comment cannot be empty"));
+    }
+
+    let collection: Collection<Comment> = state.db.collection("comments");
+
+    let object_id = ObjectId::parse_str(&comment_id).map_err(|_| {
+        AppError::invalid_data("Invalid comment ID")
+    })?;
+
+    let comment = match collection.find_one(doc! { "_id": object_id }).await? {
+        Some(comment) => comment,
+        None => return Err(AppError::invalid_data("Comment not found")),
+    };
+
+    if comment.user_id != payload.user_id {
+        return Err(AppError::invalid_data("You can only edit your own comments"));
+    }
+
+    let update_doc = doc! {
+        "$set": {
+            "comment": payload.comment,
+            "updated_at": Utc::now()
+        }
+    };
+
+    match collection.update_one(doc! { "_id": object_id }, update_doc).await {
+        Ok(_) => {
+            match collection.find_one(doc! { "_id": object_id }).await? {
+                Some(updated_comment) => {
+                    let comment_response = CommentResponse::from(updated_comment);
+                    Ok(Json(json!({
+                        "success": true,
+                        "message": "Comment updated successfully",
+                        "comment": comment_response
+                    })))
+                }
+                None => Err(AppError::invalid_data("Comment not found after update")),
+            }
+        }
+        Err(e) => {
+            eprintln!("Error updating comment: {}", e);
+            Err(AppError::from(e))
+        }
+    }
+}
+
+pub async fn delete_comment(
+    State(state): State<AppState>,
+    Path(comment_id): Path<String>,
+    Json(payload): Json<LikeRequest>,
+) -> Result<Json<serde_json::Value>> {
+    let comment_collection: Collection<Comment> = state.db.collection("comments");
+
+    let object_id = ObjectId::parse_str(&comment_id).map_err(|_| {
+        AppError::invalid_data("Invalid comment ID")
+    })?;
+
+    let comment = match comment_collection.find_one(doc! { "_id": object_id }).await? {
+        Some(comment) => comment,
+        None => return Err(AppError::invalid_data("Comment not found")),
+    };
+
+    if comment.user_id != payload.user_id {
+        return Err(AppError::invalid_data("You can only edit your own comments"));
+    }
+
+    match comment_collection.delete_one(doc! { "_id": object_id }).await {
+        Ok(result) if result.deleted_count > 0 => {
+            let post_collection: Collection<Post> = state.db.collection("posts");
+            let post_object_id = ObjectId::parse_str(&comment.post_id);
+            if let Ok(post_id) = post_object_id {
+                let _ = post_collection.update_one(
+                    doc! { "_id": post_id },
+                    doc! { "$inc": { "comments_count": -1 }, "$set": { "updated_at": Utc::now() } }
+                ).await;
+            }
+
+            Ok(Json(json!({
+                "success": true,
+                "message": "Comment deleted successfully",
+                "comment_id": comment_id
+            })))
+        }
+        Ok(_) => Err(AppError::invalid_data("Comment not found")),
+        Err(e) => {
+            eprintln!("Error deleting comment: {}", e);
+            Err(AppError::from(e))
+        }
+    }
+}
+
+pub async fn like_comment(
+    State(state): State<AppState>,
+    Path(comment_id): Path<String>,
+    Json(payload): Json<LikeRequest>,
+) -> Result<Json<serde_json::Value>> {
+    let collection: Collection<Comment> = state.db.collection("comments");
+
+    let object_id = ObjectId::parse_str(&comment_id).map_err(|_| {
+        AppError::invalid_data("Invalid comment ID")
+    })?;
+
+    let comment = match collection.find_one(doc! { "_id": object_id }).await? {
+        Some(comment) => comment,
+        None => return Err(AppError::invalid_data("Comment not found")),
+    };
+
+    if comment.liked_by.contains(&payload.user_id) {
+        let comment_response = CommentResponse::from(comment);
+        return Ok(Json(json!({
+            "success": true,
+            "message": "Comment already liked by user",
+            "comment": comment_response
+        })));
+    }
+
+    let update_doc = doc! {
+        "$inc": { "likes_count": 1 },
+        "$push": { "liked_by": &payload.user_id },
+        "$set": { "is_liked": true, "updated_at": Utc::now() }
+    };
+
+    match collection.update_one(doc! { "_id": object_id }, update_doc).await {
+        Ok(_) => {
+            match collection.find_one(doc! { "_id": object_id }).await? {
+                Some(updated_comment) => {
+                    let comment_response = CommentResponse::from(updated_comment);
+                    Ok(Json(json!({
+                        "success": true,
+                        "message": "Comment liked successfully",
+                        "comment": comment_response
+                    })))
+                }
+                None => Err(AppError::invalid_data("Comment not found after update")),
+            }
+        }
+        Err(e) => {
+            eprintln!("Error liking comment: {}", e);
+            Err(AppError::from(e))
+        }
+    }
+}
+
+pub async fn unlike_comment(
+    State(state): State<AppState>,
+    Path(comment_id): Path<String>,
+    Json(payload): Json<LikeRequest>,
+) -> Result<Json<serde_json::Value>> {
+    let collection: Collection<Comment> = state.db.collection("comments");
+
+    let object_id = ObjectId::parse_str(&comment_id).map_err(|_| {
+        AppError::invalid_data("Invalid comment ID")
+    })?;
+
+    let comment = match collection.find_one(doc! { "_id": object_id }).await? {
+        Some(comment) => comment,
+        None => return Err(AppError::invalid_data("Comment not found")),
+    };
+
+    if !comment.liked_by.contains(&payload.user_id) {
+        let comment_response = CommentResponse::from(comment);
+        return Ok(Json(json!({
+            "success": true,
+            "message": "Comment not liked by user",
+            "comment": comment_response
+        })));
+    }
+
+    let update_doc = doc! {
+        "$inc": { "likes_count": -1 },
+        "$pull": { "liked_by": &payload.user_id },
+        "$set": { "is_liked": false, "updated_at": Utc::now() }
+    };
+
+    match collection.update_one(doc! { "_id": object_id }, update_doc).await {
+        Ok(_) => {
+            match collection.find_one(doc! { "_id": object_id }).await? {
+                Some(updated_comment) => {
+                    let comment_response = CommentResponse::from(updated_comment);
+                    Ok(Json(json!({
+                        "success": true,
+                        "message": "Comment unliked successfully",
+                        "comment": comment_response
+                    })))
+                }
+                None => Err(AppError::invalid_data("Comment not found after update")),
+            }
+        }
+        Err(e) => {
+            eprintln!("Error unliking comment: {}", e);
+            Err(AppError::from(e))
+        }
+    }
 }
