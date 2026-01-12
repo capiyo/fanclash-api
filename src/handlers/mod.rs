@@ -10,3 +10,4 @@ pub(crate) mod mpesa_handlers;
 pub(crate) mod posta;
 pub(crate) mod user_profile;
 pub(crate) mod vote_handlers;
+pub(crate) mod chat_handlers;

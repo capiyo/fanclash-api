@@ -6,3 +6,4 @@ pub(crate) mod pledges;
 pub(crate) mod posts;
 pub(crate) mod user_profile;
 pub(crate) mod vote_routes;
+pub(crate) mod chat;
