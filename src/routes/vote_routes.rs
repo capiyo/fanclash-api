@@ -23,6 +23,14 @@ pub fn vote_routes() -> Router<AppState> {
             get(crate::handlers::vote_handlers::get_fixture_votes),
         )
         .route(
+            "/votes/fixture/:fixture_id/total",
+            get(crate::handlers::vote_handlers::get_total_votes_for_fixture),
+        )
+        .route(
+            "/votes/fixture/:fixture_id/selection",
+            get(crate::handlers::vote_handlers::get_vote_counts_by_selection),
+        )
+        .route(
             "/votes/fixture/:fixture_id/user/:voter_id",
             get(crate::handlers::vote_handlers::get_user_vote_for_fixture),
         )
@@ -35,6 +43,10 @@ pub fn vote_routes() -> Router<AppState> {
         .route(
             "/likes/fixture/:fixture_id",
             get(crate::handlers::vote_handlers::get_fixture_likes),
+        )
+        .route(
+            "/likes/fixture/:fixture_id/total",
+            get(crate::handlers::vote_handlers::get_total_likes_for_fixture),
         )
         .route(
             "/likes/fixture/:fixture_id/user/:voter_id",
@@ -56,6 +68,10 @@ pub fn vote_routes() -> Router<AppState> {
         .route(
             "/comments/fixture/:fixture_id",
             get(crate::handlers::vote_handlers::get_fixture_comments),
+        )
+        .route(
+            "/comments/fixture/:fixture_id/total",
+            get(crate::handlers::vote_handlers::get_total_comments_for_fixture),
         )
         .route(
             "/comments/user/:voter_id",
@@ -91,8 +107,24 @@ pub fn vote_stats_routes() -> Router<AppState> {
             get(crate::handlers::vote_handlers::get_fixture_stats),
         )
         .route(
+            "/stats/fixture/:fixture_id/all",
+            get(crate::handlers::vote_handlers::get_all_counts_for_fixture),
+        )
+        .route(
+            "/stats/fixture/:fixture_id/engagement",
+            get(crate::handlers::vote_handlers::get_fixture_engagement_summary),
+        )
+        .route(
             "/stats/user/:voter_id",
             get(crate::handlers::vote_handlers::get_user_stats),
+        )
+        .route(
+            "/stats/total",
+            get(crate::handlers::vote_handlers::get_total_counts),
+        )
+        .route(
+            "/stats/batch",
+            post(crate::handlers::vote_handlers::get_batch_fixture_counts),
         )
         .route(
             "/stats/comments/bulk",

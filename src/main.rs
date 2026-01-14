@@ -120,6 +120,7 @@ async fn build_router(app_state: AppState) -> Router {
         .route("/", get(root_handler))
         .route("/health", get(health_check))
         .route("/api/health", get(api_health_check))
+         //.nest("/api/engagement", routes::fixture_engagement::routes())
         .nest("/api/auth", routes::auth::routes())
         .nest("/api/games", routes::games::routes())
         .nest("/api/posts", routes::posts::routes())
@@ -128,6 +129,7 @@ async fn build_router(app_state: AppState) -> Router {
         .nest("/api/mpesa", routes::mpesa::mpesa_routes())
         .nest("/api/votes", routes::vote_routes::vote_routes())
           .nest("/api/chats", routes::chat::routes())
+
         //.nest("/api/chats", routes::ch)
        // .nest("/api/comments", routes::po))
          .nest("/comments", routes::posts::comment_routes())

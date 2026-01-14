@@ -12,10 +12,11 @@ use validator::Validate;
 use crate::{
     errors::{AppError, Result},
     models::vote::{
-        parse_iso_timestamp_or_now, validate_selection, BulkVoteRequest, BulkVoteResponse, Comment,
-        CommentQuery, CommentResponse, CommentStats, CreateComment, CreateLike, CreateVote,
-        FixtureStats, Like, LikeResponse, LikeStats, UserVoteStatus, Vote, VoteQuery, VoteResponse,
-        VoteStats,
+        parse_iso_timestamp_or_now, validate_selection, BatchFixtureCountsRequest,
+        BatchStatsRequest, BulkVoteRequest, BulkVoteResponse, Comment, CommentQuery,
+        CommentResponse, CommentStats, CreateComment, CreateLike, CreateVote,
+        FixtureCountsResponse, FixtureStats, Like, LikeResponse, LikeStats, TotalCountsResponse,
+        UserVoteStatus, Vote, VoteQuery, VoteResponse, VoteStats,
     },
     state::AppState,
 };
@@ -298,6 +299,29 @@ pub async fn get_fixture_votes(
     Ok(Json(stats))
 }
 
+// NEW: Get total vote count for a specific fixture
+pub async fn get_total_votes_for_fixture(
+    State(state): State<AppState>,
+    Path(fixture_id): Path<String>,
+) -> Result<Json<serde_json::Value>> {
+    println!("📊 Getting total vote count for fixture: {}", fixture_id);
+
+    let collection: Collection<Vote> = state.db.collection("votes");
+    let filter = doc! { "fixture_id": &fixture_id };
+
+    let total_votes = collection.count_documents(filter).await? as i64;
+
+    let response = json!({
+        "success": true,
+        "fixture_id": fixture_id,
+        "total_votes": total_votes,
+        "timestamp": Utc::now().to_rfc3339(),
+    });
+
+    println!("✅ Total votes for fixture {}: {}", fixture_id, total_votes);
+    Ok(Json(response))
+}
+
 pub async fn get_user_vote_for_fixture(
     State(state): State<AppState>,
     Path((fixture_id, voter_id)): Path<(String, String)>,
@@ -463,6 +487,29 @@ pub async fn get_fixture_likes(
 
     println!("✅ Found {} likes for fixture", total_likes);
     Ok(Json(stats))
+}
+
+// NEW: Get total like count for a specific fixture
+pub async fn get_total_likes_for_fixture(
+    State(state): State<AppState>,
+    Path(fixture_id): Path<String>,
+) -> Result<Json<serde_json::Value>> {
+    println!("👍 Getting total like count for fixture: {}", fixture_id);
+
+    let collection: Collection<Like> = state.db.collection("likes");
+    let filter = doc! { "fixture_id": &fixture_id };
+
+    let total_likes = collection.count_documents(filter).await? as i64;
+
+    let response = json!({
+        "success": true,
+        "fixture_id": fixture_id,
+        "total_likes": total_likes,
+        "timestamp": Utc::now().to_rfc3339(),
+    });
+
+    println!("✅ Total likes for fixture {}: {}", fixture_id, total_likes);
+    Ok(Json(response))
 }
 
 pub async fn get_user_like_for_fixture(
@@ -669,6 +716,29 @@ pub async fn get_fixture_comments(
     Ok(Json(stats))
 }
 
+// NEW: Get total comment count for a specific fixture
+pub async fn get_total_comments_for_fixture(
+    State(state): State<AppState>,
+    Path(fixture_id): Path<String>,
+) -> Result<Json<serde_json::Value>> {
+    println!("💬 Getting total comment count for fixture: {}", fixture_id);
+
+    let collection: Collection<Comment> = state.db.collection("comments");
+    let filter = doc! { "fixture_id": &fixture_id };
+
+    let total_comments = collection.count_documents(filter).await? as i64;
+
+    let response = json!({
+        "success": true,
+        "fixture_id": fixture_id,
+        "total_comments": total_comments,
+        "timestamp": Utc::now().to_rfc3339(),
+    });
+
+    println!("✅ Total comments for fixture {}: {}", fixture_id, total_comments);
+    Ok(Json(response))
+}
+
 pub async fn get_user_comments(
     State(state): State<AppState>,
     Path(voter_id): Path<String>,
@@ -820,6 +890,87 @@ pub async fn get_fixture_stats(
     Ok(Json(stats))
 }
 
+// NEW: Get all counts (votes, likes, comments) for a specific fixture
+pub async fn get_all_counts_for_fixture(
+    State(state): State<AppState>,
+    Path(fixture_id): Path<String>,
+) -> Result<Json<FixtureCountsResponse>> {
+    println!("📊 Getting all counts for fixture: {}", fixture_id);
+
+    let vote_collection: Collection<Vote> = state.db.collection("votes");
+    let like_collection: Collection<Like> = state.db.collection("likes");
+    let comment_collection: Collection<Comment> = state.db.collection("comments");
+
+    // Get vote counts
+    let vote_filter = doc! { "fixture_id": &fixture_id };
+    let total_votes = vote_collection.count_documents(vote_filter.clone()).await? as i64;
+
+    let home_votes = vote_collection
+        .count_documents(doc! {
+            "fixture_id": &fixture_id,
+            "selection": "home_team"
+        })
+        .await? as i64;
+
+    let draw_votes = vote_collection
+        .count_documents(doc! {
+            "fixture_id": &fixture_id,
+            "selection": "draw"
+        })
+        .await? as i64;
+
+    let away_votes = vote_collection
+        .count_documents(doc! {
+            "fixture_id": &fixture_id,
+            "selection": "away_team"
+        })
+        .await? as i64;
+
+    // Get like count
+    let like_filter = doc! { "fixture_id": &fixture_id };
+    let total_likes = like_collection.count_documents(like_filter).await? as i64;
+
+    // Get comment count
+    let comment_filter = doc! { "fixture_id": &fixture_id };
+    let total_comments = comment_collection.count_documents(comment_filter).await? as i64;
+
+    // Get fixture details from first vote (if exists)
+    let first_vote = vote_collection.find_one(vote_filter).await?;
+    let (home_team, away_team) = if let Some(vote) = first_vote {
+        (vote.home_team.clone(), vote.away_team.clone())
+    } else {
+        ("Unknown".to_string(), "Unknown".to_string())
+    };
+
+    let total_engagement = total_votes + total_likes + total_comments;
+
+    let counts = crate::models::vote::FixtureCounts {
+        fixture_id: fixture_id.clone(),
+        home_team,
+        away_team,
+        total_votes,
+        home_votes,
+        draw_votes,
+        away_votes,
+        total_likes,
+        total_comments,
+        total_engagement,
+        user_has_voted: false,
+        user_has_liked: false,
+        user_selection: None,
+    };
+
+    let response = FixtureCountsResponse {
+        success: true,
+        message: format!("Counts retrieved for fixture {}", fixture_id),
+        data: counts,
+    };
+
+    println!("✅ All counts for fixture {}: {} votes, {} likes, {} comments",
+        fixture_id, total_votes, total_likes, total_comments);
+    Ok(Json(response))
+}
+
 pub async fn get_user_stats(
     State(state): State<AppState>,
     Path(voter_id): Path<String>,
@@ -854,6 +1005,157 @@ pub async fn get_user_stats(
         votes_count, likes_count, comments_count
     );
     Ok(Json(stats))
+}
+
+// NEW: Get total counts across all fixtures
+pub async fn get_total_counts(State(state): State<AppState>) -> Result<Json<TotalCountsResponse>> {
+    println!("📈 Getting total counts across all fixtures");
+
+    let vote_collection: Collection<Vote> = state.db.collection("votes");
+    let like_collection: Collection<Like> = state.db.collection("likes");
+    let comment_collection: Collection<Comment> = state.db.collection("comments");
+
+    // Get total counts
+    let total_votes = vote_collection.estimated_document_count().await? as i64;
+    let total_likes = like_collection.estimated_document_count().await? as i64;
+    let total_comments = comment_collection.estimated_document_count().await? as i64;
+
+    // Get unique users (distinct voterIds)
+   //let unique_users = vote_collection.distinct("voterId", None).await?.len() as i64;
+    let unique_users = vote_collection.distinct("voterId", doc! {}).await?.len() as i64;
+    let total_engagement = total_votes + total_likes + total_comments;
+
+    let counts = crate::models::vote::TotalCounts {
+        total_votes,
+        total_likes,
+        total_comments,
+        total_engagement,
+        total_users: unique_users,
+        timestamp: Utc::now().to_rfc3339(),
+    };
+
+    let response = TotalCountsResponse {
+        success: true,
+        message: "Total counts retrieved successfully".to_string(),
+        data: counts,
+    };
+
+    println!("✅ Total counts: {} votes, {} likes, {} comments, {} users",
+        total_votes, total_likes, total_comments, unique_users);
+    Ok(Json(response))
+}
+
+// NEW: Get counts for multiple fixtures in batch
+// NEW: Get counts for multiple fixtures in batch
+pub async fn get_batch_fixture_counts(
+    State(state): State<AppState>,
+    Json(payload): Json<BatchFixtureCountsRequest>,
+) -> Result<Json<crate::models::vote::BatchFixtureCountsResponse>> {
+    println!("📊 Getting batch counts for {} fixtures", payload.fixture_ids.len());
+
+    let vote_collection: Collection<Vote> = state.db.collection("votes");
+    let like_collection: Collection<Like> = state.db.collection("likes");
+    let comment_collection: Collection<Comment> = state.db.collection("comments");
+
+    let mut fixture_counts = Vec::new();
+
+    for fixture_id in payload.fixture_ids {
+        // Get vote counts
+        let vote_filter = doc! { "fixture_id": &fixture_id };
+        let total_votes = vote_collection.count_documents(vote_filter.clone()).await? as i64;
+
+        // Get vote breakdown
+        let home_votes = vote_collection
+            .count_documents(doc! {
+                "fixture_id": &fixture_id,
+                "selection": "home_team"
+            })
+            .await? as i64;
+
+        let draw_votes = vote_collection
+            .count_documents(doc! {
+                "fixture_id": &fixture_id,
+                "selection": "draw"
+            })
+            .await? as i64;
+
+        let away_votes = vote_collection
+            .count_documents(doc! {
+                "fixture_id": &fixture_id,
+                "selection": "away_team"
+            })
+            .await? as i64;
+
+        // Get like count
+        let like_filter = doc! { "fixture_id": &fixture_id };
+        let total_likes = like_collection.count_documents(like_filter).await? as i64;
+
+        // Get comment count
+        let comment_filter = doc! { "fixture_id": &fixture_id };
+        let total_comments = comment_collection.count_documents(comment_filter).await? as i64;
+
+        // Get fixture details from first vote (if exists)
+        let first_vote = vote_collection.find_one(vote_filter).await?;
+        let (home_team, away_team) = if let Some(vote) = first_vote {
+            (vote.home_team.clone(), vote.away_team.clone())
+        } else {
+            ("Unknown".to_string(), "Unknown".to_string())
+        };
+
+        let total_engagement = total_votes + total_likes + total_comments;
+
+        // Check if user has voted/liked (if user_id is provided)
+        let mut user_has_voted = None;
+        let mut user_has_liked = None;
+        let mut user_selection = None;
+
+        if let Some(user_id) = &payload.user_id {
+            // Check if user voted
+            let user_vote_filter = doc! {
+                "fixture_id": &fixture_id,
+                "voterId": user_id,
+            };
+            let user_vote = vote_collection.find_one(user_vote_filter).await?;
+            user_has_voted = Some(user_vote.is_some());
+            user_selection = user_vote.map(|v| v.selection);
+
+            // Check if user liked
+            let user_like_filter = doc! {
+                "fixture_id": &fixture_id,
+                "voterId": user_id,
+            };
+            let user_like = like_collection.find_one(user_like_filter).await?;
+            user_has_liked = Some(user_like.is_some());
+        }
+
+        let count_item = crate::models::vote::FixtureCountItem {
+            fixture_id: fixture_id.clone(),
+            home_team,
+            away_team,
+            total_votes,
+            total_likes,
+            total_comments,
+            total_engagement,
+            user_has_voted,
+            user_has_liked,
+            user_selection,
+        };
+
+        fixture_counts.push(count_item);
+    }
+
+    // Get the count before moving the vector
+    let count = fixture_counts.len();
+
+    let response = crate::models::vote::BatchFixtureCountsResponse {
+        success: true,
+        message: format!("Counts retrieved for {} fixtures", count),
+        data: fixture_counts, // Now this is OK, we already got the length
+        count,
+    };
+
+    println!("✅ Batch counts retrieved for {} fixtures", count);
+    Ok(Json(response))
 }
 
 // ========== ADMIN HANDLERS ==========
@@ -1113,5 +1415,115 @@ pub async fn get_realtime_vote_updates(
     });
 
     println!("✅ Real-time stats retrieved");
+    Ok(Json(response))
+}
+
+// NEW: Get vote counts by selection for a fixture
+pub async fn get_vote_counts_by_selection(
+    State(state): State<AppState>,
+    Path(fixture_id): Path<String>,
+) -> Result<Json<serde_json::Value>> {
+    println!("📊 Getting vote counts by selection for fixture: {}", fixture_id);
+
+    let collection: Collection<Vote> = state.db.collection("votes");
+
+    let home_votes = collection
+        .count_documents(doc! {
+            "fixture_id": &fixture_id,
+            "selection": "home_team"
+        })
+        .await? as i64;
+
+    let draw_votes = collection
+        .count_documents(doc! {
+            "fixture_id": &fixture_id,
+            "selection": "draw"
+        })
+        .await? as i64;
+
+    let away_votes = collection
+        .count_documents(doc! {
+            "fixture_id": &fixture_id,
+            "selection": "away_team"
+        })
+        .await? as i64;
+
+    let total_votes = home_votes + draw_votes + away_votes;
+
+    let response = json!({
+        "success": true,
+        "fixture_id": fixture_id,
+        "vote_counts": {
+            "home_team": home_votes,
+            "draw": draw_votes,
+            "away_team": away_votes,
+            "total": total_votes
+        },
+        "percentages": {
+            "home": if total_votes > 0 { (home_votes as f64 / total_votes as f64) * 100.0 } else { 0.0 },
+            "draw": if total_votes > 0 { (draw_votes as f64 / total_votes as f64) * 100.0 } else { 0.0 },
+            "away": if total_votes > 0 { (away_votes as f64 / total_votes as f64) * 100.0 } else { 0.0 }
+        },
+        "timestamp": Utc::now().to_rfc3339()
+    });
+
+    println!("✅ Vote counts by selection for fixture {}: H:{} D:{} A:{}",
+        fixture_id, home_votes, draw_votes, away_votes);
+    Ok(Json(response))
+}
+
+// NEW: Get engagement summary for a fixture
+pub async fn get_fixture_engagement_summary(
+    State(state): State<AppState>,
+    Path(fixture_id): Path<String>,
+) -> Result<Json<serde_json::Value>> {
+    println!("📊 Getting engagement summary for fixture: {}", fixture_id);
+
+    let vote_collection: Collection<Vote> = state.db.collection("votes");
+    let like_collection: Collection<Like> = state.db.collection("likes");
+    let comment_collection: Collection<Comment> = state.db.collection("comments");
+
+    // Get counts
+    let vote_filter = doc! { "fixture_id": &fixture_id };
+    let total_votes = vote_collection.count_documents(vote_filter.clone()).await? as i64;
+    let total_likes = like_collection.count_documents(vote_filter.clone()).await? as i64;
+    let total_comments = comment_collection.count_documents(vote_filter.clone()).await? as i64;
+    let total_engagement = total_votes + total_likes + total_comments;
+
+    // Get fixture details
+    let first_vote = vote_collection.find_one(vote_filter).await?;
+    let (home_team, away_team) = if let Some(vote) = first_vote {
+        (vote.home_team.clone(), vote.away_team.clone())
+    } else {
+        ("Unknown".to_string(), "Unknown".to_string())
+    };
+
+    // Calculate engagement score (weighted)
+    let engagement_score = (total_votes as f64 * 1.0) +
+                          (total_likes as f64 * 0.5) +
+                          (total_comments as f64 * 1.5);
+
+    let response = json!({
+        "success": true,
+        "fixture_id": fixture_id,
+        "home_team": home_team,
+        "away_team": away_team,
+        "engagement_metrics": {
+            "votes": total_votes,
+            "likes": total_likes,
+            "comments": total_comments,
+            "total_engagement": total_engagement,
+            "engagement_score": engagement_score
+        },
+        "engagement_percentages": {
+            "vote_percentage": if total_engagement > 0 { (total_votes as f64 / total_engagement as f64) * 100.0 } else { 0.0 },
+            "like_percentage": if total_engagement > 0 { (total_likes as f64 / total_engagement as f64) * 100.0 } else { 0.0 },
+            "comment_percentage": if total_engagement > 0 { (total_comments as f64 / total_engagement as f64) * 100.0 } else { 0.0 }
+        },
+        "timestamp": Utc::now().to_rfc3339()
+    });
+
+    println!("✅ Engagement summary for fixture {}: {} total engagement",
+        fixture_id, total_engagement);
     Ok(Json(response))
 }

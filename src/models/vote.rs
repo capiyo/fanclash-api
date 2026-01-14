@@ -1,4 +1,3 @@
-
 use bson::{oid::ObjectId, DateTime as BsonDateTime};
 use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
@@ -495,6 +494,211 @@ impl ErrorResponse {
         }
     }
 }
+
+// ========== TOTAL COUNTS MODELS ==========
+
+// Total counts for all fixtures
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TotalCounts {
+    #[serde(rename = "totalVotes")]
+    pub total_votes: i64,
+
+    #[serde(rename = "totalLikes")]
+    pub total_likes: i64,
+
+    #[serde(rename = "totalComments")]
+    pub total_comments: i64,
+
+    #[serde(rename = "totalEngagement")]
+    pub total_engagement: i64,
+
+    #[serde(rename = "totalUsers")]
+    pub total_users: i64,
+
+    #[serde(rename = "timestamp")]
+    pub timestamp: String,
+}
+
+// Response for total counts
+#[derive(Debug, Serialize)]
+pub struct TotalCountsResponse {
+    pub success: bool,
+    pub message: String,
+    pub data: TotalCounts,
+}
+
+// Counts for a specific fixture
+#[derive(Debug, Serialize, Deserialize)]
+pub struct FixtureCounts {
+    #[serde(rename = "fixtureId")]
+    pub fixture_id: String,
+
+    #[serde(rename = "homeTeam")]
+    pub home_team: String,
+
+    #[serde(rename = "awayTeam")]
+    pub away_team: String,
+
+    #[serde(rename = "totalVotes")]
+    pub total_votes: i64,
+
+    #[serde(rename = "homeVotes")]
+    pub home_votes: i64,
+
+    #[serde(rename = "drawVotes")]
+    pub draw_votes: i64,
+
+    #[serde(rename = "awayVotes")]
+    pub away_votes: i64,
+
+    #[serde(rename = "totalLikes")]
+    pub total_likes: i64,
+
+    #[serde(rename = "totalComments")]
+    pub total_comments: i64,
+
+    #[serde(rename = "totalEngagement")]
+    pub total_engagement: i64,
+
+    #[serde(rename = "userHasVoted")]
+    pub user_has_voted: bool,
+
+    #[serde(rename = "userHasLiked")]
+    pub user_has_liked: bool,
+
+    #[serde(rename = "userSelection")]
+    pub user_selection: Option<String>,
+}
+
+// Response for fixture counts
+#[derive(Debug, Serialize)]
+pub struct FixtureCountsResponse {
+    pub success: bool,
+    pub message: String,
+    pub data: FixtureCounts,
+}
+
+// Batch request for multiple fixtures
+#[derive(Debug, Deserialize)]
+pub struct BatchFixtureCountsRequest {
+    #[serde(rename = "fixtureIds")]
+    pub fixture_ids: Vec<String>,
+
+    #[serde(rename = "userId", skip_serializing_if = "Option::is_none")]
+    pub user_id: Option<String>,
+}
+
+// Single fixture count item for batch response
+#[derive(Debug, Serialize, Deserialize)]
+pub struct FixtureCountItem {
+    #[serde(rename = "fixtureId")]
+    pub fixture_id: String,
+
+    #[serde(rename = "homeTeam")]
+    pub home_team: String,
+
+    #[serde(rename = "awayTeam")]
+    pub away_team: String,
+
+    #[serde(rename = "totalVotes")]
+    pub total_votes: i64,
+
+    #[serde(rename = "totalLikes")]
+    pub total_likes: i64,
+
+    #[serde(rename = "totalComments")]
+    pub total_comments: i64,
+
+    #[serde(rename = "totalEngagement")]
+    pub total_engagement: i64,
+
+    #[serde(rename = "userHasVoted", skip_serializing_if = "Option::is_none")]
+    pub user_has_voted: Option<bool>,
+
+    #[serde(rename = "userHasLiked", skip_serializing_if = "Option::is_none")]
+    pub user_has_liked: Option<bool>,
+
+    #[serde(rename = "userSelection", skip_serializing_if = "Option::is_none")]
+    pub user_selection: Option<String>,
+}
+
+// Batch response for multiple fixtures
+#[derive(Debug, Serialize)]
+pub struct BatchFixtureCountsResponse {
+    pub success: bool,
+    pub message: String,
+    pub data: Vec<FixtureCountItem>,
+    pub count: usize,
+}
+
+// Vote breakdown for detailed stats
+#[derive(Debug, Serialize, Deserialize)]
+pub struct VoteBreakdown {
+    #[serde(rename = "homeVotes")]
+    pub home_votes: i64,
+
+    #[serde(rename = "drawVotes")]
+    pub draw_votes: i64,
+
+    #[serde(rename = "awayVotes")]
+    pub away_votes: i64,
+
+    #[serde(rename = "homePercentage")]
+    pub home_percentage: f64,
+
+    #[serde(rename = "drawPercentage")]
+    pub draw_percentage: f64,
+
+    #[serde(rename = "awayPercentage")]
+    pub away_percentage: f64,
+}
+
+// Detailed fixture stats including vote breakdown
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DetailedFixtureStats {
+    #[serde(rename = "fixtureId")]
+    pub fixture_id: String,
+
+    #[serde(rename = "homeTeam")]
+    pub home_team: String,
+
+    #[serde(rename = "awayTeam")]
+    pub away_team: String,
+
+    #[serde(rename = "totalVotes")]
+    pub total_votes: i64,
+
+    #[serde(rename = "voteBreakdown")]
+    pub vote_breakdown: VoteBreakdown,
+
+    #[serde(rename = "totalLikes")]
+    pub total_likes: i64,
+
+    #[serde(rename = "totalComments")]
+    pub total_comments: i64,
+
+    #[serde(rename = "totalEngagement")]
+    pub total_engagement: i64,
+
+    #[serde(rename = "userHasVoted")]
+    pub user_has_voted: bool,
+
+    #[serde(rename = "userHasLiked")]
+    pub user_has_liked: bool,
+
+    #[serde(rename = "userSelection")]
+    pub user_selection: Option<String>,
+}
+
+// Response for detailed stats
+#[derive(Debug, Serialize)]
+pub struct DetailedFixtureStatsResponse {
+    pub success: bool,
+    pub message: String,
+    pub data: DetailedFixtureStats,
+}
+
+// ========== END OF TOTAL COUNTS MODELS ==========
 
 // Additional models for enhanced functionality
 
