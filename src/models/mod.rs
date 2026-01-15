@@ -12,3 +12,4 @@ pub(crate) mod user_profile;
 pub(crate) mod vote;
 pub(crate) mod posta;
 pub(crate) mod chat;
+pub(crate) mod archive;
