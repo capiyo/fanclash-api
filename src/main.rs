@@ -120,6 +120,7 @@ async fn build_router(app_state: AppState) -> Router {
         .route("/", get(root_handler))
         .route("/health", get(health_check))
         .route("/api/health", get(api_health_check))
+        .route("/api/simple_health_check", get(simple_health_check))
          //.nest("/api/engagement", routes::fixture_engagement::routes())
         .nest("/api/auth", routes::auth::routes())
         .nest("/api/games", routes::games::routes())
@@ -166,6 +167,13 @@ async fn root_handler() -> &'static str {
 async fn health_check() -> Json<serde_json::Value> {
     Json(serde_json::json!({
         "status": "healthy",
+        "timestamp": chrono::Utc::now().to_rfc3339(),
+    }))
+}
+async fn simple_health_check() -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "status": "ok",
+        "message": "API is reachable",
         "timestamp": chrono::Utc::now().to_rfc3339(),
     }))
 }
