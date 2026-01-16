@@ -244,7 +244,6 @@ pub async fn create_post(
         comments_count: 0,
         shares_count: 0,
         liked_by: Vec::new(),
-        is_liked: false,
         is_saved: false,
         created_at: now,
         updated_at: now,
@@ -674,7 +673,7 @@ pub async fn get_user_post_stats(
     })))
 }
 
-// ========== NEW LIKE/COMMENT HANDLERS ==========
+// ========== LIKE/COMMENT HANDLERS ==========
 
 pub async fn like_post(
     State(state): State<AppState>,
@@ -699,10 +698,11 @@ pub async fn like_post(
         })));
     }
 
+    // ✅ FIXED: Removed "is_liked": true
     let update_doc = doc! {
         "$inc": { "likes_count": 1 },
         "$push": { "liked_by": &payload.user_id },
-        "$set": { "is_liked": true, "updated_at": Utc::now() }
+        "$set": { "updated_at": Utc::now() }
     };
 
     match collection.update_one(doc! { "_id": object_id }, update_doc).await {
@@ -749,10 +749,11 @@ pub async fn unlike_post(
         })));
     }
 
+    // ✅ FIXED: Removed "is_liked": false
     let update_doc = doc! {
         "$inc": { "likes_count": -1 },
         "$pull": { "liked_by": &payload.user_id },
-        "$set": { "is_liked": false, "updated_at": Utc::now() }
+        "$set": { "updated_at": Utc::now() }
     };
 
     match collection.update_one(doc! { "_id": object_id }, update_doc).await {
@@ -858,7 +859,6 @@ pub async fn create_comment(
         comment: payload.comment.clone(),
         likes_count: 0,
         liked_by: Vec::new(),
-        is_liked: false,
         created_at: now,
         updated_at: now,
     };
@@ -1007,10 +1007,11 @@ pub async fn like_comment(
         })));
     }
 
+    // ✅ FIXED: Removed "is_liked": true
     let update_doc = doc! {
         "$inc": { "likes_count": 1 },
         "$push": { "liked_by": &payload.user_id },
-        "$set": { "is_liked": true, "updated_at": Utc::now() }
+        "$set": { "updated_at": Utc::now() }
     };
 
     match collection.update_one(doc! { "_id": object_id }, update_doc).await {
@@ -1059,10 +1060,11 @@ pub async fn unlike_comment(
         })));
     }
 
+    // ✅ FIXED: Removed "is_liked": false
     let update_doc = doc! {
         "$inc": { "likes_count": -1 },
         "$pull": { "liked_by": &payload.user_id },
-        "$set": { "is_liked": false, "updated_at": Utc::now() }
+        "$set": { "updated_at": Utc::now() }
     };
 
     match collection.update_one(doc! { "_id": object_id }, update_doc).await {

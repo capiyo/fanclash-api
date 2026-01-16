@@ -19,7 +19,6 @@ pub struct Post {
     pub comments_count: i32,
     pub shares_count: i32,
     pub liked_by: Vec<String>,
-    pub is_liked: bool,
     pub is_saved: bool,
 
     pub created_at: DateTime<Utc>,
@@ -40,8 +39,6 @@ pub struct Comment {
 
     pub likes_count: i32,
     pub liked_by: Vec<String>,
-    pub is_liked: bool,
-
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -60,7 +57,6 @@ pub struct PostResponse {
     pub comments_count: i32,
     pub shares_count: i32,
     pub liked_by: Vec<String>,
-    pub is_liked: bool,
     pub is_saved: bool,
 
     pub created_at: String,
@@ -81,7 +77,6 @@ impl From<Post> for PostResponse {
             comments_count: post.comments_count,
             shares_count: post.shares_count,
             liked_by: post.liked_by,
-            is_liked: post.is_liked,
             is_saved: post.is_saved,
             created_at: post.created_at.to_rfc3339(),
             updated_at: post.updated_at.to_rfc3339(),
@@ -98,7 +93,6 @@ pub struct CommentResponse {
     pub comment: String,
     pub likes_count: i32,
     pub liked_by: Vec<String>,
-    pub is_liked: bool,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -113,7 +107,6 @@ impl From<Comment> for CommentResponse {
             comment: comment.comment,
             likes_count: comment.likes_count,
             liked_by: comment.liked_by,
-            is_liked: comment.is_liked,
             created_at: comment.created_at.to_rfc3339(),
             updated_at: comment.updated_at.to_rfc3339(),
         }
@@ -125,6 +118,7 @@ pub struct LikeRequest {
     pub user_id: String,
 }
 
+// ✅ ADD THESE MISSING STRUCTS:
 #[derive(Debug, Deserialize, Serialize, Validate)]
 pub struct CreateCommentRequest {
     pub user_id: String,
@@ -138,46 +132,4 @@ pub struct UpdateCommentRequest {
     pub user_id: String,
     #[validate(length(min = 1, message = "Comment cannot be empty"))]
     pub comment: String,
-}
-
-// Other existing structs...
-#[derive(Debug, Deserialize, Serialize)]
-pub struct PaginationParams {
-    pub page: Option<i64>,
-    pub limit: Option<i64>,
-    pub user_id: Option<String>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-pub struct UpdateCaptionRequest {
-    pub caption: String,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-pub struct SearchParams {
-    pub q: Option<String>,
-    pub user_id: Option<String>,
-    pub start_date: Option<DateTime<Utc>>,
-    pub end_date: Option<DateTime<Utc>>,
-    pub page: Option<i64>,
-    pub limit: Option<i64>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct PostStats {
-    pub total_posts: u64,
-    pub posts_last_week: u64,
-    pub top_users: Vec<serde_json::Value>,
-    pub posts_by_hour: Vec<serde_json::Value>,
-    pub timestamp: DateTime<Utc>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct UserPostStats {
-    pub user_id: String,
-    pub total_posts: u64,
-    pub latest_post: Option<String>,
-    pub first_post: Option<String>,
-    pub posts_by_month: Vec<serde_json::Value>,
-    pub timestamp: DateTime<Utc>,
 }
