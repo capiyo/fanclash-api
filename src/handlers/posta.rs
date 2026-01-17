@@ -114,7 +114,6 @@ macro_rules! log_trace {
 }
 
 // ========== ORIGINAL POST HANDLERS ==========
-
 pub async fn get_posts(
     State(state): State<AppState>,
     Query(params): Query<PaginationParams>,
@@ -127,11 +126,14 @@ pub async fn get_posts(
         request_id, params.page, params.limit, params.user_id);
 
     let collection: Collection<Post> = state.db.collection("posts");
+    log_trace!("[{}] Got collection reference", request_id);
 
     let mut filter = doc! {};
     if let Some(user_id) = &params.user_id {
         filter.insert("user_id", user_id);
         log_debug!("[{}] Filtering by user_id: {}", request_id, user_id);
+    } else {
+        log_trace!("[{}] No user_id filter applied", request_id);
     }
 
     let page = params.page.unwrap_or(1).max(1);
@@ -151,34 +153,81 @@ pub async fn get_posts(
         .limit(limit)
         .build();
 
+    log_trace!("[{}] Built find options: sort by created_at descending, skip={}, limit={}",
+        request_id, skip, limit);
+
     log_trace!("[{}] Starting database query: count_documents", request_id);
-    let total_count = collection.count_documents(filter.clone()).await? as i64;
-    let total_pages = (total_count as f64 / limit as f64).ceil() as i64;
-    log_trace!("[{}] Database query completed: total_count={}", request_id, total_count);
-
-    log_trace!("[{}] Starting database query: find with options", request_id);
-    let cursor = collection.find(filter).await?;
-    let posts: Vec<Post> = cursor.try_collect().await?;
-    log_trace!("[{}] Database query completed: found {} posts", request_id, posts.len());
-
-    let post_responses: Vec<PostResponse> = posts.into_iter().map(PostResponse::from).collect();
-
-    let duration = start_time.elapsed();
-    log_info!("[{}] get_posts completed in {:?}. Found {} posts",
-        request_id, duration, post_responses.len());
-
-    Ok(Json(json!({
-        "success": true,
-        "posts": post_responses,
-        "pagination": {
-            "page": page,
-            "limit": limit,
-            "total_count": total_count,
-            "total_pages": total_pages,
-            "has_next": page < total_pages,
-            "has_previous": page > 1
+    let count_start = std::time::Instant::now();
+    let total_count = match collection.count_documents(filter.clone()).await {
+        Ok(count) => {
+            let count_duration = count_start.elapsed();
+            log_trace!("[{}] count_documents completed in {:?}: count={}",
+                request_id, count_duration, count);
+            count as i64
         }
-    })))
+        Err(e) => {
+            let count_duration = count_start.elapsed();
+            log_error!("[{}] count_documents failed after {:?}: {}",
+                request_id, count_duration, e);
+            return Err(AppError::from(e));
+        }
+    };
+
+    let total_pages = (total_count as f64 / limit as f64).ceil() as i64;
+    log_trace!("[{}] Calculated total_pages: {}", request_id, total_pages);
+
+    log_trace!("[{}] Starting database query: find", request_id);
+    let find_start = std::time::Instant::now();
+    match collection.find(filter).await {
+        Ok(cursor) => {
+            let find_duration = find_start.elapsed();
+            log_trace!("[{}] find() completed in {:?}. Got cursor",
+                request_id, find_duration);
+
+            log_trace!("[{}] Starting to collect results from cursor", request_id);
+            let collect_start = std::time::Instant::now();
+
+            // FIX: Specify the type explicitly for try_collect
+            match cursor.try_collect::<Vec<Post>>().await {
+                Ok(posts) => {
+                    let collect_duration = collect_start.elapsed();
+                    log_trace!("[{}] try_collect() completed in {:?}. Found {} posts",
+                        request_id, collect_duration, posts.len());
+
+                    let post_responses: Vec<PostResponse> = posts.into_iter().map(PostResponse::from).collect();
+
+                    let total_duration = start_time.elapsed();
+                    log_info!("[{}] get_posts completed in {:?}. Found {} posts",
+                        request_id, total_duration, post_responses.len());
+
+                    Ok(Json(json!({
+                        "success": true,
+                        "posts": post_responses,
+                        "pagination": {
+                            "page": page,
+                            "limit": limit,
+                            "total_count": total_count,
+                            "total_pages": total_pages,
+                            "has_next": page < total_pages,
+                            "has_previous": page > 1
+                        }
+                    })))
+                }
+                Err(e) => {
+                    let collect_duration = collect_start.elapsed();
+                    log_error!("[{}] try_collect() failed after {:?}: {}",
+                        request_id, collect_duration, e);
+                    Err(AppError::from(e))
+                }
+            }
+        }
+        Err(e) => {
+            let find_duration = find_start.elapsed();
+            log_error!("[{}] find() failed after {:?}: {}",
+                request_id, find_duration, e);
+            Err(AppError::from(e))
+        }
+    }
 }
 
 pub async fn create_post(
