@@ -41,7 +41,7 @@ pub fn comment_routes() -> Router<AppState> {
         // Comment-specific routes in their own router
         .route("/:comment_id", put(posta::update_comment))
         .route("/:comment_id", delete(posta::delete_comment))
-        .route("/:comment_id/like", post(posta::like_comment))
+        //.route("/:comment_id/like", post(posta::like_comment))
         .route("/:comment_id/unlike", post(posta::unlike_comment))
 }
 
