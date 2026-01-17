@@ -1,8 +1,8 @@
-use chrono::{DateTime, Utc};
 use mongodb::bson::oid::ObjectId;
-use mongodb::bson; // ADD THIS
+use mongodb::bson;
 use serde::{Deserialize, Serialize};
 use validator::Validate;
+use chrono::{DateTime, Utc};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]
 pub struct Post {
@@ -22,12 +22,52 @@ pub struct Post {
     pub liked_by: Vec<String>,
     pub is_saved: bool,
 
-    // FIX: Add MongoDB DateTime helper
+    // MongoDB DateTime fields
     #[serde(with = "bson::serde_helpers::chrono_datetime_as_bson_datetime")]
     pub created_at: DateTime<Utc>,
 
     #[serde(with = "bson::serde_helpers::chrono_datetime_as_bson_datetime")]
     pub updated_at: DateTime<Utc>,
+
+    // For cache invalidation
+    #[serde(with = "bson::serde_helpers::chrono_datetime_as_bson_datetime")]
+    pub last_modified: DateTime<Utc>,
+}
+
+impl Post {
+    pub fn new(
+        user_id: String,
+        user_name: String,
+        caption: String,
+        image_url: String,
+        cloudinary_public_id: String,
+        image_format: String,
+    ) -> Self {
+        let now = Utc::now();
+        Self {
+            _id: Some(ObjectId::new()),
+            user_id,
+            user_name,
+            caption,
+            image_url,
+            cloudinary_public_id,
+            image_format,
+            likes_count: 0,
+            comments_count: 0,
+            shares_count: 0,
+            liked_by: Vec::new(),
+            is_saved: false,
+            created_at: now,
+            updated_at: now,
+            last_modified: now,
+        }
+    }
+
+    pub fn update_timestamps(&mut self) {
+        let now = Utc::now();
+        self.updated_at = now;
+        self.last_modified = now;
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]
@@ -45,12 +85,45 @@ pub struct Comment {
     pub likes_count: i32,
     pub liked_by: Vec<String>,
 
-    // FIX: Add MongoDB DateTime helper
+    // MongoDB DateTime fields
     #[serde(with = "bson::serde_helpers::chrono_datetime_as_bson_datetime")]
     pub created_at: DateTime<Utc>,
 
     #[serde(with = "bson::serde_helpers::chrono_datetime_as_bson_datetime")]
     pub updated_at: DateTime<Utc>,
+
+    // For cache invalidation
+    #[serde(with = "bson::serde_helpers::chrono_datetime_as_bson_datetime")]
+    pub last_modified: DateTime<Utc>,
+}
+
+impl Comment {
+    pub fn new(
+        post_id: String,
+        user_id: String,
+        user_name: String,
+        comment: String,
+    ) -> Self {
+        let now = Utc::now();
+        Self {
+            _id: Some(ObjectId::new()),
+            post_id,
+            user_id,
+            user_name,
+            comment,
+            likes_count: 0,
+            liked_by: Vec::new(),
+            created_at: now,
+            updated_at: now,
+            last_modified: now,
+        }
+    }
+
+    pub fn update_timestamps(&mut self) {
+        let now = Utc::now();
+        self.updated_at = now;
+        self.last_modified = now;
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -69,8 +142,10 @@ pub struct PostResponse {
     pub liked_by: Vec<String>,
     pub is_saved: bool,
 
-    pub created_at: String,
-    pub updated_at: String,
+    pub created_at: String,      // ISO string
+    pub updated_at: String,      // ISO string
+    pub last_modified: String,   // ISO string
+    pub timestamp: i64,          // Unix timestamp for easy caching
 }
 
 impl From<Post> for PostResponse {
@@ -88,8 +163,10 @@ impl From<Post> for PostResponse {
             shares_count: post.shares_count,
             liked_by: post.liked_by,
             is_saved: post.is_saved,
-            created_at: post.created_at.to_rfc3339(),
-            updated_at: post.updated_at.to_rfc3339(),
+            created_at: post.created_at.to_rfc3339(),      // Convert to ISO string
+            updated_at: post.updated_at.to_rfc3339(),      // Convert to ISO string
+            last_modified: post.last_modified.to_rfc3339(), // Convert to ISO string
+            timestamp: post.last_modified.timestamp(),     // Unix timestamp
         }
     }
 }
@@ -103,8 +180,10 @@ pub struct CommentResponse {
     pub comment: String,
     pub likes_count: i32,
     pub liked_by: Vec<String>,
-    pub created_at: String,
-    pub updated_at: String,
+    pub created_at: String,      // ISO string
+    pub updated_at: String,      // ISO string
+    pub last_modified: String,   // ISO string
+    pub timestamp: i64,          // Unix timestamp
 }
 
 impl From<Comment> for CommentResponse {
@@ -117,12 +196,15 @@ impl From<Comment> for CommentResponse {
             comment: comment.comment,
             likes_count: comment.likes_count,
             liked_by: comment.liked_by,
-            created_at: comment.created_at.to_rfc3339(),
-            updated_at: comment.updated_at.to_rfc3339(),
+            created_at: comment.created_at.to_rfc3339(),      // Convert to ISO string
+            updated_at: comment.updated_at.to_rfc3339(),      // Convert to ISO string
+            last_modified: comment.last_modified.to_rfc3339(), // Convert to ISO string
+            timestamp: comment.last_modified.timestamp(),     // Unix timestamp
         }
     }
 }
 
+// Request/Response structs for handlers
 #[derive(Debug, Deserialize, Serialize)]
 pub struct LikeRequest {
     pub user_id: String,

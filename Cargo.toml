@@ -65,3 +65,4 @@ tracing-subscriber = "0.3"
 # Local development ONLY (remove for production)
 dotenvy = "0.15"
 dotenv = "0.15"
+headers = "0.3"

@@ -1,6 +1,7 @@
 use axum::{
     extract::{Path, Query, State},
     response::Json,
+    http::HeaderMap,
 };
 use mongodb::bson::Bson;
 
@@ -14,9 +15,27 @@ use serde_json::{json, Value as JsonValue};
 use uuid::Uuid;
 
 use crate::errors::{AppError, Result};
-use crate::models::posta::{Post, PostResponse, Comment, CommentResponse, LikeRequest, CreateCommentRequest, UpdateCommentRequest};
-use crate::services::cloudinary::CloudinaryService;
+use crate::models::posta::{Post, PostResponse, Comment, CommentResponse};
 use crate::state::AppState;
+
+// Add these request structs locally since they don't exist in models
+#[derive(Debug, Deserialize, Serialize)]
+pub struct LikeRequest {
+    pub user_id: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct CreateCommentRequest {
+    pub user_id: String,
+    pub user_name: String,
+    pub comment: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct UpdateCommentRequest {
+    pub user_id: String,
+    pub comment: String,
+}
 
 const MAX_FILE_SIZE: u64 = 10 * 1024 * 1024; // 10MB
 const ALLOWED_EXTENSIONS: [&str; 4] = ["jpg", "jpeg", "png", "gif"];
@@ -36,17 +55,11 @@ pub struct UpdateCaptionRequest {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
-pub struct UpdatePostRequest {
-    pub caption: Option<String>,
-    pub image: Option<Vec<u8>>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
 pub struct SearchParams {
     pub q: Option<String>,
     pub user_id: Option<String>,
-    pub start_date: Option<chrono::DateTime<Utc>>,
-    pub end_date: Option<chrono::DateTime<Utc>>,
+    pub start_date: Option<String>,
+    pub end_date: Option<String>,
     pub page: Option<i64>,
     pub limit: Option<i64>,
 }
@@ -106,25 +119,62 @@ macro_rules! log_error {
     }
 }
 
-macro_rules! log_trace {
-    ($($arg:tt)*) => {
-        println!("[TRACE] [{}] {}", chrono::Utc::now().format("%Y-%m-%d %H:%M:%S%.3f"), format!($($arg)*))
+// Helper function to parse If-Modified-Since header
+fn parse_if_modified_since(header_value: &str) -> Option<chrono::DateTime<Utc>> {
+    // Try RFC 3339/ISO 8601 format first
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(header_value) {
+        return Some(dt.with_timezone(&Utc));
     }
+
+    // Try Unix timestamp
+    if let Ok(timestamp) = header_value.parse::<i64>() {
+        return chrono::DateTime::from_timestamp(timestamp, 0);
+    }
+
+    None
 }
 
-// ========== POST HANDLERS ==========
+// ========== POST HANDLERS WITH CACHE SUPPORT ==========
 pub async fn get_posts(
     State(state): State<AppState>,
     Query(params): Query<PaginationParams>,
+    headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>> {
     let request_id = uuid::Uuid::new_v4();
     log_info!("[{}] Starting get_posts handler", request_id);
 
     let collection: Collection<Post> = state.db.collection("posts");
 
+    // Check If-Modified-Since header for cache validation
+    let if_modified_since: Option<chrono::DateTime<Utc>> = headers
+        .get("If-Modified-Since")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|str| parse_if_modified_since(str));
+
     let mut filter = doc! {};
     if let Some(user_id) = &params.user_id {
         filter.insert("user_id", user_id);
+    }
+
+    // If client sent timestamp, only get posts modified after that
+    if let Some(since) = if_modified_since {
+        filter.insert("last_modified", doc! { "$gt": since });
+
+        // Check if there are any new posts
+        let new_post_count = collection.count_documents(filter.clone()).await?;
+
+        if new_post_count == 0 {
+            // No new posts - return 304 Not Modified
+            log_info!("[{}] No new posts since {} - returning 304",
+                request_id, since);
+
+            return Ok(Json(json!({
+                "success": true,
+                "cached": true,
+                "message": "No new content",
+                "timestamp": since.timestamp()
+            })));
+        }
     }
 
     let page = params.page.unwrap_or(1).max(1);
@@ -139,7 +189,7 @@ pub async fn get_posts(
     let total_pages = (total_count as f64 / limit as f64).ceil() as i64;
 
     let _options = FindOptions::builder()
-        .sort(doc! { "created_at": -1 })
+        .sort(doc! { "last_modified": -1 })  // Sort by last modified for cache
         .skip(skip as u64)
         .limit(limit)
         .build();
@@ -149,12 +199,24 @@ pub async fn get_posts(
 
     let post_responses: Vec<PostResponse> = posts.into_iter().map(PostResponse::from).collect();
 
+    // Get latest timestamp for cache validation
+    let latest_timestamp = if !post_responses.is_empty() {
+        post_responses
+            .iter()
+            .map(|p| p.timestamp)
+            .max()
+            .unwrap_or(Utc::now().timestamp())
+    } else {
+        Utc::now().timestamp()
+    };
+
     log_info!("[{}] get_posts completed. Found {} posts", request_id, post_responses.len());
 
     Ok(Json(json!({
         "success": true,
         "posts": post_responses,
-        "errors": 0,
+        "timestamp": latest_timestamp,
+        "cache_valid": if_modified_since.is_some(),
         "pagination": {
             "page": page,
             "limit": limit,
@@ -191,12 +253,17 @@ pub async fn search_posts(
         filter.insert("user_id", user_id);
     }
 
-    if let Some(start_date) = &params.start_date {
-        filter.insert("created_at", doc! { "$gte": start_date });
+    // Parse date strings to chrono::DateTime
+    if let Some(start_date_str) = &params.start_date {
+        if let Ok(start_date) = chrono::DateTime::parse_from_rfc3339(start_date_str) {
+            filter.insert("created_at", doc! { "$gte": start_date.with_timezone(&Utc) });
+        }
     }
 
-    if let Some(end_date) = &params.end_date {
-        filter.insert("created_at", doc! { "$lte": end_date });
+    if let Some(end_date_str) = &params.end_date {
+        if let Ok(end_date) = chrono::DateTime::parse_from_rfc3339(end_date_str) {
+            filter.insert("created_at", doc! { "$lte": end_date.with_timezone(&Utc) });
+        }
     }
 
     let page = params.page.unwrap_or(1).max(1);
@@ -227,8 +294,8 @@ pub async fn search_posts(
         "search_params": {
             "q": params.q,
             "user_id": params.user_id,
-            "start_date": params.start_date.map(|d| d.to_rfc3339()),
-            "end_date": params.end_date.map(|d| d.to_rfc3339()),
+            "start_date": params.start_date,
+            "end_date": params.end_date,
             "page": page,
             "limit": limit
         },
@@ -338,6 +405,7 @@ pub async fn create_post(
         AppError::InvalidImageFormat
     })?;
 
+    // Get cloudinary service from state
     let cloudinary_service = &state.cloudinary;
     let public_id = format!("post_{}_{}", user_id, Uuid::new_v4());
     let upload_path = format!("fanclash/posts/{}", user_id);
@@ -366,8 +434,9 @@ pub async fn create_post(
     };
 
     let collection: Collection<Post> = state.db.collection("posts");
-    let now = Utc::now();
 
+    // Use the new() constructor which sets all timestamps
+    let now = Utc::now();
     let post = Post {
         _id: Some(ObjectId::new()),
         user_id: user_id.clone(),
@@ -383,9 +452,10 @@ pub async fn create_post(
         is_saved: false,
         created_at: now,
         updated_at: now,
+        last_modified: now,
     };
 
-    collection.insert_one(&post).await?;
+    let _insert_result = collection.insert_one(&post).await?;
 
     let post_response = PostResponse::from(post);
 
@@ -491,7 +561,8 @@ pub async fn update_post_caption(
     let update = doc! {
         "$set": {
             "caption": payload.caption.clone(),
-            "updated_at": Utc::now()
+            "updated_at": Utc::now(),
+            "last_modified": Utc::now() // Update cache timestamp
         }
     };
 
@@ -717,7 +788,7 @@ pub async fn get_post_stats(
             "posts_last_week": posts_last_week,
             "top_users": top_users,
             "posts_by_hour": posts_by_hour,
-            "timestamp": Utc::now().to_rfc3339()
+            "timestamp": Utc::now().timestamp()
         }
     })))
 }
@@ -773,7 +844,7 @@ pub async fn get_user_post_stats(
             "latest_post": latest_post.and_then(|p| p._id.map(|id| id.to_hex())),
             "first_post": first_post.and_then(|p| p._id.map(|id| id.to_hex())),
             "posts_by_month": posts_by_month,
-            "timestamp": Utc::now().to_rfc3339()
+            "timestamp": Utc::now().timestamp()
         }
     })))
 }
@@ -819,7 +890,10 @@ pub async fn like_post(
     let update = doc! {
         "$inc": { "likes_count": 1 },
         "$push": { "liked_by": &payload.user_id },
-        "$set": { "updated_at": Utc::now() }
+        "$set": {
+            "updated_at": Utc::now(),
+            "last_modified": Utc::now() // Update cache timestamp
+        }
     };
 
     let result = collection.update_one(filter, update).await?;
@@ -885,7 +959,10 @@ pub async fn unlike_post(
     let update = doc! {
         "$inc": { "likes_count": -1 },
         "$pull": { "liked_by": &payload.user_id },
-        "$set": { "updated_at": Utc::now() }
+        "$set": {
+            "updated_at": Utc::now(),
+            "last_modified": Utc::now() // Update cache timestamp
+        }
     };
 
     let result = collection.update_one(filter, update).await?;
@@ -969,7 +1046,6 @@ pub async fn create_comment(
         request_id, post_id, payload.user_id);
 
     if payload.comment.trim().is_empty() {
-        // Use the helper function `invalid_data` (maps to ValidationError)
         return Err(AppError::invalid_data("Comment cannot be empty"));
     }
 
@@ -997,6 +1073,7 @@ pub async fn create_comment(
         return Err(AppError::invalid_data("You have already commented on this post. You can edit your existing comment."));
     }
 
+    // Create comment manually since Comment::new() doesn't exist
     let now = Utc::now();
     let comment = Comment {
         _id: Some(ObjectId::new()),
@@ -1008,15 +1085,22 @@ pub async fn create_comment(
         liked_by: Vec::new(),
         created_at: now,
         updated_at: now,
+        last_modified: now,
     };
 
     let insert_result = comment_collection.insert_one(&comment).await?;
 
-    // FIXED: Check if inserted_id is an ObjectId
+    // Check if inserted_id is an ObjectId
     if insert_result.inserted_id.as_object_id().is_some() {
         let _ = post_collection.update_one(
             doc! { "_id": post_object_id },
-            doc! { "$inc": { "comments_count": 1 }, "$set": { "updated_at": Utc::now() } }
+            doc! {
+                "$inc": { "comments_count": 1 },
+                "$set": {
+                    "updated_at": Utc::now(),
+                    "last_modified": Utc::now() // Update cache timestamp
+                }
+            }
         ).await;
 
         let comment_response = CommentResponse::from(comment);
@@ -1027,10 +1111,7 @@ pub async fn create_comment(
             "comment": comment_response
         })))
     } else {
-        // FIXED: Use ServiceError (which maps to "Service error" in your AppError enum)
         Err(AppError::service("Failed to create comment"))
-        // OR use ValidationError if that's more appropriate:
-        // Err(AppError::invalid_data("Failed to create comment"))
     }
 }
 
@@ -1067,7 +1148,8 @@ pub async fn update_comment(
     let update = doc! {
         "$set": {
             "comment": payload.comment.clone(),
-            "updated_at": Utc::now()
+            "updated_at": Utc::now(),
+            "last_modified": Utc::now() // Update cache timestamp
         }
     };
 
@@ -1125,7 +1207,13 @@ pub async fn delete_comment(
             let post_collection: Collection<Post> = state.db.collection("posts");
             let _ = post_collection.update_one(
                 doc! { "_id": post_id },
-                doc! { "$inc": { "comments_count": -1 }, "$set": { "updated_at": Utc::now() } }
+                doc! {
+                    "$inc": { "comments_count": -1 },
+                    "$set": {
+                        "updated_at": Utc::now(),
+                        "last_modified": Utc::now() // Update cache timestamp
+                    }
+                }
             ).await;
         }
 
@@ -1176,7 +1264,10 @@ pub async fn like_comment(
     let update = doc! {
         "$inc": { "likes_count": 1 },
         "$push": { "liked_by": &payload.user_id },
-        "$set": { "updated_at": Utc::now() }
+        "$set": {
+            "updated_at": Utc::now(),
+            "last_modified": Utc::now() // Update cache timestamp
+        }
     };
 
     let result = collection.update_one(filter, update).await?;
@@ -1239,7 +1330,10 @@ pub async fn unlike_comment(
     let update = doc! {
         "$inc": { "likes_count": -1 },
         "$pull": { "liked_by": &payload.user_id },
-        "$set": { "updated_at": Utc::now() }
+        "$set": {
+            "updated_at": Utc::now(),
+            "last_modified": Utc::now() // Update cache timestamp
+        }
     };
 
     let result = collection.update_one(filter, update).await?;
