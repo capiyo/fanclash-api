@@ -118,6 +118,8 @@ pub async fn get_posts(
     State(state): State<AppState>,
     Query(params): Query<PaginationParams>,
 ) -> Result<Json<serde_json::Value>> {
+    use mongodb::bson::{Bson, Document, from_document};
+
     let start_time = std::time::Instant::now();
     let request_id = uuid::Uuid::new_v4();
 
@@ -125,15 +127,14 @@ pub async fn get_posts(
     log_debug!("[{}] Pagination params: page={:?}, limit={:?}, user_id={:?}",
         request_id, params.page, params.limit, params.user_id);
 
-    let collection: Collection<Post> = state.db.collection("posts");
+    // Use Document instead of Post to avoid DateTime issues
+    let collection: Collection<Document> = state.db.collection::<Document>("posts");
     log_trace!("[{}] Got collection reference", request_id);
 
     let mut filter = doc! {};
     if let Some(user_id) = &params.user_id {
         filter.insert("user_id", user_id);
         log_debug!("[{}] Filtering by user_id: {}", request_id, user_id);
-    } else {
-        log_trace!("[{}] No user_id filter applied", request_id);
     }
 
     let page = params.page.unwrap_or(1).max(1);
@@ -153,81 +154,117 @@ pub async fn get_posts(
         .limit(limit)
         .build();
 
-    log_trace!("[{}] Built find options: sort by created_at descending, skip={}, limit={}",
-        request_id, skip, limit);
-
     log_trace!("[{}] Starting database query: count_documents", request_id);
     let count_start = std::time::Instant::now();
-    let total_count = match collection.count_documents(filter.clone()).await {
-        Ok(count) => {
-            let count_duration = count_start.elapsed();
-            log_trace!("[{}] count_documents completed in {:?}: count={}",
-                request_id, count_duration, count);
-            count as i64
-        }
-        Err(e) => {
-            let count_duration = count_start.elapsed();
-            log_error!("[{}] count_documents failed after {:?}: {}",
-                request_id, count_duration, e);
-            return Err(AppError::from(e));
-        }
-    };
+    let total_count = collection.count_documents(filter.clone()).await? as i64;
+    let count_duration = count_start.elapsed();
+    log_trace!("[{}] count_documents completed in {:?}: count={}",
+        request_id, count_duration, total_count);
 
     let total_pages = (total_count as f64 / limit as f64).ceil() as i64;
     log_trace!("[{}] Calculated total_pages: {}", request_id, total_pages);
 
     log_trace!("[{}] Starting database query: find", request_id);
     let find_start = std::time::Instant::now();
-    match collection.find(filter).await {
-        Ok(cursor) => {
-            let find_duration = find_start.elapsed();
-            log_trace!("[{}] find() completed in {:?}. Got cursor",
-                request_id, find_duration);
+    let cursor = collection.find(filter).await?;
+    let find_duration = find_start.elapsed();
+    log_trace!("[{}] find() completed in {:?}. Got cursor",
+        request_id, find_duration);
 
-            log_trace!("[{}] Starting to collect results from cursor", request_id);
-            let collect_start = std::time::Instant::now();
+    log_trace!("[{}] Starting to collect results from cursor", request_id);
+    let collect_start = std::time::Instant::now();
 
-            // FIX: Specify the type explicitly for try_collect
-            match cursor.try_collect::<Vec<Post>>().await {
-                Ok(posts) => {
-                    let collect_duration = collect_start.elapsed();
-                    log_trace!("[{}] try_collect() completed in {:?}. Found {} posts",
-                        request_id, collect_duration, posts.len());
+    // Collect raw documents
+    let raw_docs: Vec<Document> = cursor.try_collect().await?;
+    let collect_duration = collect_start.elapsed();
+    log_trace!("[{}] try_collect() completed in {:?}. Found {} raw documents",
+        request_id, collect_duration, raw_docs.len());
 
-                    let post_responses: Vec<PostResponse> = posts.into_iter().map(PostResponse::from).collect();
+    // Convert documents manually to handle DateTime conversion
+    let mut posts = Vec::new();
+    let mut errors = 0;
 
-                    let total_duration = start_time.elapsed();
-                    log_info!("[{}] get_posts completed in {:?}. Found {} posts",
-                        request_id, total_duration, post_responses.len());
+    for doc in raw_docs {
+        // Create a temporary struct with proper DateTime handling
+        #[derive(Debug, Deserialize)]
+        struct TempPost {
+            #[serde(rename = "_id", skip_serializing_if = "Option::is_none")]
+            _id: Option<ObjectId>,
+            user_id: String,
+            user_name: String,
+            caption: String,
+            image_url: String,
+            cloudinary_public_id: String,
+            image_format: String,
+            likes_count: i32,
+            comments_count: i32,
+            shares_count: i32,
+            liked_by: Vec<String>,
+            is_saved: bool,
+            created_at: String,  // Expect string
+            updated_at: String,  // Expect string
+        }
 
-                    Ok(Json(json!({
-                        "success": true,
-                        "posts": post_responses,
-                        "pagination": {
-                            "page": page,
-                            "limit": limit,
-                            "total_count": total_count,
-                            "total_pages": total_pages,
-                            "has_next": page < total_pages,
-                            "has_previous": page > 1
-                        }
-                    })))
-                }
-                Err(e) => {
-                    let collect_duration = collect_start.elapsed();
-                    log_error!("[{}] try_collect() failed after {:?}: {}",
-                        request_id, collect_duration, e);
-                    Err(AppError::from(e))
-                }
+        match from_document::<TempPost>(doc.clone()) {
+            Ok(temp_post) => {
+                // Convert string dates back to DateTime
+                let created_at = chrono::DateTime::parse_from_rfc3339(&temp_post.created_at)
+                    .map_err(|_| AppError::invalid_data("Invalid created_at format"))?
+                    .with_timezone(&Utc);
+
+                let updated_at = chrono::DateTime::parse_from_rfc3339(&temp_post.updated_at)
+                    .map_err(|_| AppError::invalid_data("Invalid updated_at format"))?
+                    .with_timezone(&Utc);
+
+                // Create proper Post struct
+                let post = Post {
+                    _id: temp_post._id,
+                    user_id: temp_post.user_id,
+                    user_name: temp_post.user_name,
+                    caption: temp_post.caption,
+                    image_url: temp_post.image_url,
+                    cloudinary_public_id: temp_post.cloudinary_public_id,
+                    image_format: temp_post.image_format,
+                    likes_count: temp_post.likes_count,
+                    comments_count: temp_post.comments_count,
+                    shares_count: temp_post.shares_count,
+                    liked_by: temp_post.liked_by,
+                    is_saved: temp_post.is_saved,
+                    created_at,
+                    updated_at,
+                };
+                posts.push(post);
+            }
+            Err(e) => {
+                errors += 1;
+                log_warn!("[{}] Failed to parse document: {}", request_id, e);
             }
         }
-        Err(e) => {
-            let find_duration = find_start.elapsed();
-            log_error!("[{}] find() failed after {:?}: {}",
-                request_id, find_duration, e);
-            Err(AppError::from(e))
-        }
     }
+
+    if errors > 0 {
+        log_warn!("[{}] Failed to parse {} documents", request_id, errors);
+    }
+
+    let post_responses: Vec<PostResponse> = posts.into_iter().map(PostResponse::from).collect();
+
+    let total_duration = start_time.elapsed();
+    log_info!("[{}] get_posts completed in {:?}. Found {} posts ({} errors)",
+        request_id, total_duration, post_responses.len(), errors);
+
+    Ok(Json(json!({
+        "success": true,
+        "posts": post_responses,
+        "errors": errors,
+        "pagination": {
+            "page": page,
+            "limit": limit,
+            "total_count": total_count,
+            "total_pages": total_pages,
+            "has_next": page < total_pages,
+            "has_previous": page > 1
+        }
+    })))
 }
 
 pub async fn create_post(
