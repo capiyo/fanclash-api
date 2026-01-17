@@ -1,5 +1,6 @@
 use chrono::{DateTime, Utc};
 use mongodb::bson::oid::ObjectId;
+use mongodb::bson;
 use serde::{Deserialize, Serialize};
 use validator::Validate;
 
@@ -21,7 +22,11 @@ pub struct Post {
     pub liked_by: Vec<String>,
     pub is_saved: bool,
 
+    // FIX: Add MongoDB serde helper for DateTime
+    #[serde(with = "bson::serde_helpers::chrono_datetime_as_bson_datetime")]
     pub created_at: DateTime<Utc>,
+
+    #[serde(with = "bson::serde_helpers::chrono_datetime_as_bson_datetime")]
     pub updated_at: DateTime<Utc>,
 }
 
@@ -39,7 +44,12 @@ pub struct Comment {
 
     pub likes_count: i32,
     pub liked_by: Vec<String>,
+
+    // FIX: Add MongoDB serde helper for DateTime
+    #[serde(with = "bson::serde_helpers::chrono_datetime_as_bson_datetime")]
     pub created_at: DateTime<Utc>,
+
+    #[serde(with = "bson::serde_helpers::chrono_datetime_as_bson_datetime")]
     pub updated_at: DateTime<Utc>,
 }
 
@@ -118,7 +128,6 @@ pub struct LikeRequest {
     pub user_id: String,
 }
 
-// ✅ ADD THESE MISSING STRUCTS:
 #[derive(Debug, Deserialize, Serialize, Validate)]
 pub struct CreateCommentRequest {
     pub user_id: String,
