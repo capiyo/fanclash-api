@@ -32,6 +32,7 @@ chrono = { version = "0.4", features = ["serde"] }
 bcrypt = "0.15"
 jsonwebtoken = "9.0"
 uuid = { version = "1.0", features = ["v4", "serde"] }
+regex = "1.10.2"
 
 # Upload & Processing - EXACTLY AS YOU HAD
 multer = "2.1"

@@ -10,12 +10,14 @@ use mongodb::{
 };
 use futures_util::TryStreamExt;
 use serde::Deserialize;
+use regex::escape;
 
 use crate::{
     errors::{AppError, Result},
     models::archive::{
         ArchiveActivity, ArchiveActivityRequest, ArchiveActivityResponse, ArchiveQueryParams,
-        ActivityType, UserArchiveStats,
+        ActivityType, UserArchiveStats, GetAllArchiveQuery, PaginatedArchiveResponse,
+        PaginationInfo, ArchiveStats, AppliedFilters, ActivityBreakdown,
     },
     state::AppState,
 };
@@ -93,7 +95,7 @@ pub async fn create_archive_activity(
     let activity_id = insert_result
         .inserted_id
         .as_object_id()
-        .ok_or_else(|| AppError::service("Failed to get inserted ID"))? // Use service() here
+        .ok_or_else(|| AppError::service("Failed to get inserted ID"))?
         .to_hex();
 
     Ok(Json(ArchiveActivityResponse {
@@ -373,4 +375,318 @@ pub async fn check_user_activity(
 
     println!("✅ User activity check complete");
     Ok(Json(result))
+}
+
+// ========== NEW METHODS ==========
+
+// GET /api/archive/all
+pub async fn get_all_archives(
+    State(state): State<AppState>,
+    Query(query): Query<GetAllArchiveQuery>,
+) -> Result<Json<PaginatedArchiveResponse>> {
+    println!("📚 Getting all archive activities");
+
+    let collection: Collection<ArchiveActivity> = state.db.collection("user_archive_activities");
+
+    // Build query filter
+    let mut filter = doc! {};
+
+    // Filter by username if provided
+    if let Some(username) = &query.username {
+        // Use case-insensitive regex for partial matching
+        filter.insert(
+            "username",
+            doc! {
+                "$regex": format!("^{}", escape(username)),
+                "$options": "i"
+            },
+        );
+        println!("🔍 Filtering by username: {}", username);
+    }
+
+    // Filter by user_id if provided
+    if let Some(user_id) = &query.user_id {
+        filter.insert("user_id", user_id);
+        println!("🔍 Filtering by user_id: {}", user_id);
+    }
+
+    // Filter by activity type if provided
+    if let Some(activity_type) = &query.activity_type {
+        let valid_activity_type = match activity_type.to_lowercase().as_str() {
+            "vote" => "vote",
+            "like" => "like",
+            "comment" => "comment",
+            _ => {
+                return Err(AppError::invalid_data(
+                    "Invalid activity type. Must be 'vote', 'like', or 'comment'",
+                ));
+            }
+        };
+        filter.insert("activity_type", valid_activity_type);
+        println!("🔍 Filtering by activity_type: {}", valid_activity_type);
+    }
+
+    // Filter by date range if provided
+    if let Some(start_date) = &query.start_date {
+        let start_datetime = chrono::DateTime::parse_from_rfc3339(start_date)
+            .map_err(|_| AppError::invalid_data("Invalid start_date format. Use RFC3339"))?
+            .with_timezone(&Utc);
+        filter.insert("created_at", doc! { "$gte": start_datetime });
+        println!("🔍 Filtering by start_date: {}", start_date);
+    }
+
+    if let Some(end_date) = &query.end_date {
+        let end_datetime = chrono::DateTime::parse_from_rfc3339(end_date)
+            .map_err(|_| AppError::invalid_data("Invalid end_date format. Use RFC3339"))?
+            .with_timezone(&Utc);
+        filter.insert("created_at", doc! { "$lte": end_datetime });
+        println!("🔍 Filtering by end_date: {}", end_date);
+    }
+
+    // Pagination
+    let page = query.page.unwrap_or(1) as i64;
+    let limit = query.limit.unwrap_or(100) as i64;
+    let skip = (page - 1) * limit;
+
+    // Determine sort order
+    let sort_order = match query.sort_by.as_deref() {
+        Some("oldest") => {
+            println!("📊 Sorting by: oldest first");
+            1 // Ascending (oldest first)
+        }
+        Some("newest") | None => {
+            println!("📊 Sorting by: newest first (default)");
+            -1 // Descending (newest first, default)
+        }
+        _ => {
+            return Err(AppError::invalid_data(
+                "Invalid sort_by. Must be 'newest' or 'oldest'",
+            ));
+        }
+    };
+
+    // Get total count for pagination info
+    let total_count_u64 = collection.count_documents(filter.clone()).await?;
+    let total_count = total_count_u64 as i64;
+
+    // Get paginated results
+    let cursor = collection
+        .find(filter)
+        .sort(doc! { "created_at": sort_order })
+        .skip(skip as u64)
+        .limit(limit)
+        .await?;
+
+    let activities: Vec<ArchiveActivity> = cursor.try_collect().await?;
+    let returned_count = activities.len();
+
+    // Get unique users count
+    let pipeline = vec![
+        doc! { "$group": { "_id": "$user_id" } },
+        doc! { "$count": "unique_users" },
+    ];
+
+    let unique_users_cursor = collection
+        .aggregate(pipeline)
+        .await?;
+
+    let unique_users_result: Vec<_> = unique_users_cursor.try_collect().await?;
+    let unique_users = unique_users_result
+        .first()
+        .and_then(|doc| doc.get_i32("unique_users").ok())
+        .unwrap_or(0);
+
+    println!(
+        "✅ Found {} archive activities (page {}, limit {}), total: {}, unique users: {}",
+        returned_count,
+        page,
+        limit,
+        total_count,
+        unique_users
+    );
+
+    // Calculate total pages
+    let total_pages = if total_count == 0 {
+        1
+    } else {
+        (total_count as f64 / limit as f64).ceil() as i64
+    };
+
+    Ok(Json(PaginatedArchiveResponse {
+        success: true,
+        data: activities,
+        pagination: PaginationInfo {
+            page,
+            limit,
+            total_items: total_count,
+            total_pages,
+            has_next: (page * limit) < total_count,
+            has_prev: page > 1,
+        },
+        stats: ArchiveStats {
+            unique_users,
+            returned_count,
+            activity_breakdown: None,
+        },
+        filters_applied: AppliedFilters {
+            username: query.username,
+            user_id: query.user_id,
+            activity_type: query.activity_type,
+            start_date: query.start_date,
+            end_date: query.end_date,
+            sort_by: query.sort_by.unwrap_or_else(|| "newest".to_string()),
+        },
+    }))
+}
+
+// GET /api/archive/by-username/:username
+pub async fn get_archives_by_username(
+    State(state): State<AppState>,
+    Path(username): Path<String>,
+    Query(query): Query<GetAllArchiveQuery>,
+) -> Result<Json<PaginatedArchiveResponse>> {
+    println!("👤 Getting archives for username: {}", username);
+
+    let collection: Collection<ArchiveActivity> = state.db.collection("user_archive_activities");
+
+    // Build query filter with username
+    let mut filter = doc! {
+        "username": doc! {
+            "$regex": format!("^{}", escape(&username)),
+            "$options": "i"
+        }
+    };
+
+    // Filter by activity type if provided
+    if let Some(activity_type) = &query.activity_type {
+        let valid_activity_type = match activity_type.to_lowercase().as_str() {
+            "vote" => "vote",
+            "like" => "like",
+            "comment" => "comment",
+            _ => {
+                return Err(AppError::invalid_data(
+                    "Invalid activity type. Must be 'vote', 'like', or 'comment'",
+                ));
+            }
+        };
+        filter.insert("activity_type", valid_activity_type);
+    }
+
+    // Filter by date range if provided
+    if let Some(start_date) = &query.start_date {
+        let start_datetime = chrono::DateTime::parse_from_rfc3339(start_date)
+            .map_err(|_| AppError::invalid_data("Invalid start_date format. Use RFC3339"))?
+            .with_timezone(&Utc);
+        filter.insert("created_at", doc! { "$gte": start_datetime });
+    }
+
+    if let Some(end_date) = &query.end_date {
+        let end_datetime = chrono::DateTime::parse_from_rfc3339(end_date)
+            .map_err(|_| AppError::invalid_data("Invalid end_date format. Use RFC3339"))?
+            .with_timezone(&Utc);
+        filter.insert("created_at", doc! { "$lte": end_datetime });
+    }
+
+    // Pagination
+    let page = query.page.unwrap_or(1) as i64;
+    let limit = query.limit.unwrap_or(50) as i64;
+    let skip = (page - 1) * limit;
+
+    // Determine sort order
+    let sort_order = match query.sort_by.as_deref() {
+        Some("oldest") => {
+            println!("📊 Sorting by: oldest first");
+            1
+        }
+        Some("newest") | None => {
+            println!("📊 Sorting by: newest first (default)");
+            -1
+        }
+        _ => {
+            return Err(AppError::invalid_data(
+                "Invalid sort_by. Must be 'newest' or 'oldest'",
+            ));
+        }
+    };
+
+    // Get total count
+    let total_count_u64 = collection.count_documents(filter.clone()).await?;
+    let total_count = total_count_u64 as i64;
+
+    // Get paginated results
+    let cursor = collection
+        .find(filter.clone())
+        .sort(doc! { "created_at": sort_order })
+        .skip(skip as u64)
+        .limit(limit)
+        .await?;
+
+    let activities: Vec<ArchiveActivity> = cursor.try_collect().await?;
+    let returned_count = activities.len();
+
+    // Get activity type breakdown for this user
+    let pipeline = vec![
+        doc! {
+            "$match": filter.clone()
+        },
+        doc! {
+            "$group": {
+                "_id": "$activity_type",
+                "count": { "$sum": 1 }
+            }
+        },
+        doc! { "$sort": { "count": -1 } }
+    ];
+
+    let breakdown_cursor = collection.aggregate(pipeline).await?;
+    let breakdown_docs: Vec<_> = breakdown_cursor.try_collect().await?;
+
+    let activity_breakdown: Vec<ActivityBreakdown> = breakdown_docs
+        .into_iter()
+        .filter_map(|doc| {
+            Some(ActivityBreakdown {
+                activity_type: doc.get_str("_id").ok()?.to_string(),
+                count: doc.get_i32("count").ok()?,
+            })
+        })
+        .collect();
+
+    println!(
+        "✅ Found {} archive activities for username: {}",
+        returned_count,
+        username
+    );
+
+    // Calculate total pages
+    let total_pages = if total_count == 0 {
+        1
+    } else {
+        (total_count as f64 / limit as f64).ceil() as i64
+    };
+
+    Ok(Json(PaginatedArchiveResponse {
+        success: true,
+        data: activities,
+        pagination: PaginationInfo {
+            page,
+            limit,
+            total_items: total_count,
+            total_pages,
+            has_next: (page * limit) < total_count,
+            has_prev: page > 1,
+        },
+        stats: ArchiveStats {
+            unique_users: 1, // Since we're filtering by single username
+            returned_count,
+            activity_breakdown: Some(activity_breakdown),
+        },
+        filters_applied: AppliedFilters {
+            username: Some(username),
+            user_id: query.user_id,
+            activity_type: query.activity_type,
+            start_date: query.start_date,
+            end_date: query.end_date,
+            sort_by: query.sort_by.unwrap_or_else(|| "newest".to_string()),
+        },
+    }))
 }

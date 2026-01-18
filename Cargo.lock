@@ -70,6 +70,7 @@ dependencies = [
  "mongodb",
  "multer 2.1.0",
  "redis",
+ "regex",
  "reqwest",
  "serde",
  "serde_json",
