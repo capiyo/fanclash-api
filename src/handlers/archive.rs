@@ -380,68 +380,16 @@ pub async fn check_user_activity(
 // ========== NEW METHODS ==========
 
 // GET /api/archive/all
+// GET /api/archive/all
 pub async fn get_all_archives(
     State(state): State<AppState>,
     Query(query): Query<GetAllArchiveQuery>,
 ) -> Result<Json<PaginatedArchiveResponse>> {
     println!("📚 Getting all archive activities");
-
     let collection: Collection<ArchiveActivity> = state.db.collection("user_archive_activities");
 
-    // Build query filter
-    let mut filter = doc! {};
-
-    // Filter by username if provided
-    if let Some(username) = &query.username {
-        // Use case-insensitive regex for partial matching
-        filter.insert(
-            "username",
-            doc! {
-                "$regex": format!("^{}", escape(username)),
-                "$options": "i"
-            },
-        );
-        println!("🔍 Filtering by username: {}", username);
-    }
-
-    // Filter by user_id if provided
-    if let Some(user_id) = &query.user_id {
-        filter.insert("user_id", user_id);
-        println!("🔍 Filtering by user_id: {}", user_id);
-    }
-
-    // Filter by activity type if provided
-    if let Some(activity_type) = &query.activity_type {
-        let valid_activity_type = match activity_type.to_lowercase().as_str() {
-            "vote" => "vote",
-            "like" => "like",
-            "comment" => "comment",
-            _ => {
-                return Err(AppError::invalid_data(
-                    "Invalid activity type. Must be 'vote', 'like', or 'comment'",
-                ));
-            }
-        };
-        filter.insert("activity_type", valid_activity_type);
-        println!("🔍 Filtering by activity_type: {}", valid_activity_type);
-    }
-
-    // Filter by date range if provided
-    if let Some(start_date) = &query.start_date {
-        let start_datetime = chrono::DateTime::parse_from_rfc3339(start_date)
-            .map_err(|_| AppError::invalid_data("Invalid start_date format. Use RFC3339"))?
-            .with_timezone(&Utc);
-        filter.insert("created_at", doc! { "$gte": start_datetime });
-        println!("🔍 Filtering by start_date: {}", start_date);
-    }
-
-    if let Some(end_date) = &query.end_date {
-        let end_datetime = chrono::DateTime::parse_from_rfc3339(end_date)
-            .map_err(|_| AppError::invalid_data("Invalid end_date format. Use RFC3339"))?
-            .with_timezone(&Utc);
-        filter.insert("created_at", doc! { "$lte": end_datetime });
-        println!("🔍 Filtering by end_date: {}", end_date);
-    }
+    // Empty filter to fetch all documents
+    let filter = doc! {};
 
     // Pagination
     let page = query.page.unwrap_or(1) as i64;
@@ -471,7 +419,7 @@ pub async fn get_all_archives(
 
     // Get paginated results
     let cursor = collection
-        .find(filter)
+        .find(filter.clone())
         .sort(doc! { "created_at": sort_order })
         .skip(skip as u64)
         .limit(limit)
@@ -486,10 +434,7 @@ pub async fn get_all_archives(
         doc! { "$count": "unique_users" },
     ];
 
-    let unique_users_cursor = collection
-        .aggregate(pipeline)
-        .await?;
-
+    let unique_users_cursor = collection.aggregate(pipeline).await?;
     let unique_users_result: Vec<_> = unique_users_cursor.try_collect().await?;
     let unique_users = unique_users_result
         .first()
@@ -498,11 +443,7 @@ pub async fn get_all_archives(
 
     println!(
         "✅ Found {} archive activities (page {}, limit {}), total: {}, unique users: {}",
-        returned_count,
-        page,
-        limit,
-        total_count,
-        unique_users
+        returned_count, page, limit, total_count, unique_users
     );
 
     // Calculate total pages

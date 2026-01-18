@@ -15,7 +15,7 @@ pub fn archive_routes() -> Router<AppState> {
 
         // Get user's archive activities
         .route("/user/:user_id", get(archive::get_user_archive))
-        .route("/allVotes", get(archive::get_user_archive))
+        .route("/getAllVotes", get(archive::get_all_archives))
 
         // Get activities for specific fixture
         .route("/fixture/:fixture_id", get(archive::get_fixture_archive))
