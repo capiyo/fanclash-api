@@ -166,45 +166,45 @@ pub fn notification_routes() -> Router<AppState> {
     Router::new()
         // Token registration
         .route(
-            "/notifications/register-token",
+            "/register-token",
             post(crate::handlers::notification_handler::register_token),
         )
 
         // Sending notifications
         .route(
-            "/notifications/send",
+            "/send",
             post(crate::handlers::notification_handler::send_notification),
         )
         .route(
-            "/notifications/send-bulk",
+            "/send-bulk",
             post(crate::handlers::notification_handler::send_bulk_notifications),
         )
 
         // Getting user notifications
         .route(
-            "/notifications/user/:user_id",
+            "/user/:user_id",
             get(crate::handlers::notification_handler::get_user_notifications),
         )
 
         // Marking as read
         .route(
-            "/notifications/mark-read",
+            "/mark-read",
             post(crate::handlers::notification_handler::mark_notifications_read),
         )
 
         // Notification preferences
         .route(
-            "/notifications/preferences/:user_id",
+            "/preferences/:user_id",
             get(crate::handlers::notification_handler::get_notification_preferences),
         )
         .route(
-            "/notifications/preferences",
+            "/preferences",
             post(crate::handlers::notification_handler::update_notification_preferences),
         )
 
         // Admin cleanup
         .route(
-            "/notifications/cleanup",
+            "/cleanup",
             post(crate::handlers::notification_handler::cleanup_expired_tokens),
         )
 }
