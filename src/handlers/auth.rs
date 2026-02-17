@@ -37,7 +37,8 @@ pub async fn register(
 
     // Hash password
     let password_hash = hash(&payload.password, DEFAULT_COST)
-        .map_err(|e| AppError::InvalidUserData)?;
+        .map_err(|_e| AppError::InvalidUserData)?;
+        //.map_err(|e| AppError::InvalidUserData)?;
 
     // Create user document
     let user = User {
@@ -51,7 +52,8 @@ pub async fn register(
     };
 
     // Insert user
-    let insert_result = collection.insert_one(&user).await?;
+    //let insert_result = collection.insert_one(&user).await?;
+    let _insert_result = collection.insert_one(&user).await?;
 
     // Get the inserted ID
     let inserted_id = user._id.unwrap();

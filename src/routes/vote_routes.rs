@@ -38,6 +38,7 @@ pub fn vote_routes() -> Router<AppState> {
             "/votes/:vote_id",
             delete(crate::handlers::vote_handlers::delete_vote),
         )
+
         // ========== LIKE ROUTES ==========
         .route("/like", post(crate::handlers::vote_handlers::create_like))
         .route(
@@ -56,6 +57,7 @@ pub fn vote_routes() -> Router<AppState> {
             "/likes/:like_id",
             delete(crate::handlers::vote_handlers::delete_like),
         )
+
         // ========== COMMENT ROUTES ==========
         .route(
             "/comment",
@@ -138,6 +140,7 @@ pub fn vote_stats_routes() -> Router<AppState> {
             "/stats/combined/bulk",
             post(crate::handlers::vote_handlers::get_combined_stats_for_multiple_fixtures),
         )
+
         // ========== REAL-TIME & TRENDING ROUTES ==========
         .route(
             "/realtime/:fixture_id",
@@ -155,5 +158,53 @@ pub fn vote_admin_routes() -> Router<AppState> {
         .route(
             "/admin/stats/overview",
             get(crate::handlers::vote_handlers::get_overview_stats),
+        )
+}
+
+// ========== 🔥 NEW FCM NOTIFICATION ROUTES ==========
+pub fn notification_routes() -> Router<AppState> {
+    Router::new()
+        // Token registration
+        .route(
+            "/notifications/register-token",
+            post(crate::handlers::notification_handler::register_token),
+        )
+
+        // Sending notifications
+        .route(
+            "/notifications/send",
+            post(crate::handlers::notification_handler::send_notification),
+        )
+        .route(
+            "/notifications/send-bulk",
+            post(crate::handlers::notification_handler::send_bulk_notifications),
+        )
+
+        // Getting user notifications
+        .route(
+            "/notifications/user/:user_id",
+            get(crate::handlers::notification_handler::get_user_notifications),
+        )
+
+        // Marking as read
+        .route(
+            "/notifications/mark-read",
+            post(crate::handlers::notification_handler::mark_notifications_read),
+        )
+
+        // Notification preferences
+        .route(
+            "/notifications/preferences/:user_id",
+            get(crate::handlers::notification_handler::get_notification_preferences),
+        )
+        .route(
+            "/notifications/preferences",
+            post(crate::handlers::notification_handler::update_notification_preferences),
+        )
+
+        // Admin cleanup
+        .route(
+            "/notifications/cleanup",
+            post(crate::handlers::notification_handler::cleanup_expired_tokens),
         )
 }

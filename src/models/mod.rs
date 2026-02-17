@@ -13,3 +13,4 @@ pub(crate) mod vote;
 pub(crate) mod posta;
 pub(crate) mod chat;
 pub(crate) mod archive;
+pub(crate) mod notification;

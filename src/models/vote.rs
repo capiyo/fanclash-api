@@ -1,3 +1,5 @@
+// src/models/vote.rs
+
 use bson::{oid::ObjectId, DateTime as BsonDateTime};
 use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
@@ -43,7 +45,7 @@ pub struct Vote {
 }
 
 // For creating new votes (from Flutter app)
-#[derive(Debug, Serialize, Deserialize, Validate)]
+#[derive(Debug, Clone, Serialize, Deserialize, Validate)]  // Added Clone
 pub struct CreateVote {
     #[serde(rename = "voterId")]
     #[validate(length(min = 1, message = "Voter ID is required"))]
@@ -104,7 +106,7 @@ pub struct Like {
 }
 
 // For creating new likes (from Flutter app)
-#[derive(Debug, Serialize, Deserialize, Validate)]
+#[derive(Debug, Clone, Serialize, Deserialize, Validate)]  // Added Clone
 pub struct CreateLike {
     #[serde(rename = "voterId")]
     #[validate(length(min = 1, message = "Voter ID is required"))]
@@ -166,7 +168,7 @@ pub struct Comment {
 }
 
 // For creating new comments (from Flutter app)
-#[derive(Debug, Serialize, Deserialize, Validate)]
+#[derive(Debug, Clone, Serialize, Deserialize, Validate)]  // Added Clone
 pub struct CreateComment {
     #[serde(rename = "voterId")]
     #[validate(length(min = 1, message = "Voter ID is required"))]

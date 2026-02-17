@@ -364,7 +364,7 @@ pub async fn get_user_messages(
 
     match collection.count_documents(filter.clone()).await {
         Ok(total) => {
-            let mut cursor = collection
+            let  cursor = collection
                 .find(filter)
                 .sort(doc! { "created_at": -1 })
                 .skip(skip as u64)

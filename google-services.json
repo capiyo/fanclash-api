@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "1095645826942",
+    "project_id": "clash-66865",
+    "storage_bucket": "clash-66865.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1095645826942:android:95aec01bd16621dbb1ad2f",
+        "android_client_info": {
+          "package_name": "com.tech.clash"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAAKUT0cq09FAF4BIoFOwz96XC4RtyvH14"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

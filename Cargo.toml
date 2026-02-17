@@ -15,6 +15,10 @@ panic = "abort"
 shuttle-axum = "0.41.0"
 shuttle-runtime = "0.41.0"
 shuttle-secrets = "0.41.0"
+yup-oauth2 = "8.0"
+hyper = { version = "0.14", features = ["full"] }
+hyper-rustls = "0.24"
+
 
 # Web Framework - EXACTLY AS YOU HAD
 axum = { version = "0.7", features = ["macros"] }

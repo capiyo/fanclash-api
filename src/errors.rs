@@ -78,6 +78,10 @@ pub enum AppError {
 
     #[error("HTTP client error: {0}")]
     HttpClientError(String),
+
+    // ADD THIS MISSING VARIANT
+    #[error("Internal server error: {0}")]
+    InternalServerError(String),
 }
 
 impl IntoResponse for AppError {
@@ -107,6 +111,7 @@ impl IntoResponse for AppError {
             AppError::ServiceError(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Service error".to_string()),
             AppError::RedisError(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Redis error".to_string()),
             AppError::HttpClientError(_) => (StatusCode::INTERNAL_SERVER_ERROR, "HTTP client error".to_string()),
+            AppError::InternalServerError(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error".to_string()),
         };
 
         let body = Json(json!({
@@ -185,6 +190,11 @@ impl AppError {
 
     pub fn redis(msg: impl Into<String>) -> Self {
         AppError::RedisError(msg.into())
+    }
+
+    // ADD THIS HELPER
+    pub fn internal_server_error(msg: impl Into<String>) -> Self {
+        AppError::InternalServerError(msg.into())
     }
 }
 

@@ -12,3 +12,4 @@ pub(crate) mod user_profile;
 pub(crate) mod vote_handlers;
 pub(crate) mod chat_handlers;
 pub(crate) mod archive;
+pub(crate) mod notification_handler;
