@@ -151,6 +151,11 @@ async fn start_server(app: Router) {
     tracing::info!("🚀 Server starting on {}", addr);
 
     match tokio::net::TcpListener::bind(addr).await {
+
+
+
+
+
         Ok(listener) => {
             axum::serve(listener, app).await.unwrap();
         }
