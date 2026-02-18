@@ -390,7 +390,7 @@ impl MpesaService {
         println!("[CONNECTIVITY] Testing auth endpoint: {}", auth_url);
 
         match self.get_access_token().await {
-            Ok(token) => {
+            Ok(_token) => {
                 println!("[CONNECTIVITY] ✓ Access token obtained successfully");
                 Ok(ConnectivityStatus {
                     connected: true,

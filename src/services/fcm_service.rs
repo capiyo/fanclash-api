@@ -8,6 +8,7 @@ use tokio::sync::Mutex;
 use futures_util::TryStreamExt;
 use std::env;
 use std::time::Instant;
+use yup_oauth2::parse_service_account_key;
 
 use crate::{
     errors::AppError,
@@ -25,79 +26,68 @@ pub struct FCMService {
 }
 
 impl FCMService {
-    pub async fn new() -> anyhow::Result<Self> {
-        println!("\n🔧🔧🔧 FCM SERVICE INITIALIZATION STARTED 🔧🔧🔧");
-        println!("📖 Reading Firebase credentials from environment variables...");
+pub async fn new() -> anyhow::Result<Self> {
+    println!("\n🔧🔧🔧 FCM SERVICE INITIALIZATION STARTED 🔧🔧🔧");
+    println!("📖 Reading Firebase credentials from environment variables...");
 
-        // Check if env vars exist (without printing full values)
-        let client_email = match env::var("FIREBASE_CLIENT_EMAIL") {
-            Ok(val) => {
-                println!("✅ FIREBASE_CLIENT_EMAIL found: {}", val);
-                val
-            },
-            Err(_) => {
-                println!("❌ FIREBASE_CLIENT_EMAIL not set in environment");
-                return Err(anyhow!("FIREBASE_CLIENT_EMAIL not set in environment"));
-            }
-        };
+    // Get credentials from .env
+    let client_email = env::var("FIREBASE_CLIENT_EMAIL")
+        .map_err(|_| anyhow!("FIREBASE_CLIENT_EMAIL not set in environment"))?;
 
-        let private_key = match env::var("FIREBASE_PRIVATE_KEY") {
-            Ok(val) => {
-                println!("✅ FIREBASE_PRIVATE_KEY found (length: {} chars)", val.len());
-                // Print first 50 chars to verify format
-                println!("   Preview: {}...", &val[0..50.min(val.len())]);
-                val
-            },
-            Err(_) => {
-                println!("❌ FIREBASE_PRIVATE_KEY not set in environment");
-                return Err(anyhow!("FIREBASE_PRIVATE_KEY not set in environment"));
-            }
-        };
+    let private_key = env::var("FIREBASE_PRIVATE_KEY")
+        .map_err(|_| anyhow!("FIREBASE_PRIVATE_KEY not set in environment"))?;
 
-        let project_id = env::var("FIREBASE_PROJECT_ID")
-            .unwrap_or_else(|_| {
-                println!("⚠️ FIREBASE_PROJECT_ID not set, using default: clash-66865");
-                "clash-66865".to_string()
-            });
-        println!("✅ Using project_id: {}", project_id);
+    let project_id = env::var("FIREBASE_PROJECT_ID")
+        .unwrap_or_else(|_| "clash-66865".to_string());
 
-        println!("🔨 Creating service account key struct...");
-        let service_account_key = ServiceAccountKey {
-            project_id: Some(project_id),
-            client_email,
-            private_key,
-            private_key_id: Some(String::new()),
-            client_id: Some(String::new()),
-            auth_uri: Some(String::new()),
-            token_uri: String::new(),
-            auth_provider_x509_cert_url: Some(String::new()),
-            client_x509_cert_url: Some(String::new()),
-            key_type: Some(String::new()),
-        };
-        println!("✅ Service account key created successfully");
+    println!("✅ FIREBASE_CLIENT_EMAIL found: {}", client_email);
+    println!("✅ FIREBASE_PRIVATE_KEY found (length: {} chars)", private_key.len());
+    println!("   Preview: {}...", &private_key[0..50.min(private_key.len())]);
+    println!("✅ Using project_id: {}", project_id);
 
-        println!("🔨 Building authenticator...");
-        let authenticator = match yup_oauth2::ServiceAccountAuthenticator::builder(service_account_key)
-            .build()
-            .await
-        {
-            Ok(auth) => {
-                println!("✅ Authenticator built successfully");
-                auth
-            }
-            Err(e) => {
-                println!("❌ Failed to build authenticator: {}", e);
-                return Err(anyhow!("Failed to build authenticator: {}", e));
-            }
-        };
+    // Create a JSON string from the environment variables
+    println!("🔨 Creating service account JSON...");
 
-        println!("🔧🔧🔧 FCM SERVICE INITIALIZATION COMPLETE 🔧🔧🔧\n");
+    // Clean the private key - ensure it has proper line breaks
+    let cleaned_private_key = private_key.replace("\n", "\\n");
 
-        Ok(Self {
-            authenticator: Arc::new(Mutex::new(authenticator)),
-            client: Client::new(),
-        })
-    }
+    let service_account_json = format!(r#"{{
+  "type": "service_account",
+  "project_id": "{}",
+  "private_key_id": "",
+  "private_key": "{}",
+  "client_email": "{}",
+  "client_id": "",
+  "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+  "token_uri": "https://oauth2.googleapis.com/token",
+  "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+  "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/{}"
+}}"#, project_id, cleaned_private_key, client_email, client_email.replace("@", "%40"));
+
+    println!("✅ Service account JSON created ({} bytes)", service_account_json.len());
+
+    // Parse it using the library's function
+    println!("🔨 Parsing service account key...");
+    let service_account_key = parse_service_account_key(service_account_json.as_bytes())
+        .map_err(|e| anyhow!("Failed to parse service account key: {}", e))?;
+
+    println!("✅ Service account key parsed successfully");
+
+    // Build the authenticator
+    println!("🔨 Building authenticator...");
+    let authenticator = yup_oauth2::ServiceAccountAuthenticator::builder(service_account_key)
+        .build()
+        .await
+        .map_err(|e| anyhow!("Failed to build authenticator: {}", e))?;
+
+    println!("✅ Authenticator built successfully");
+    println!("🔧🔧🔧 FCM SERVICE INITIALIZATION COMPLETE 🔧🔧🔧\n");
+
+    Ok(Self {
+        authenticator: Arc::new(Mutex::new(authenticator)),
+        client: Client::new(),
+    })
+}
 
     pub  async fn get_access_token(&self) -> anyhow::Result<String> {
         println!("🔑 [FCM] Requesting access token from Google...");
@@ -273,7 +263,8 @@ impl FCMService {
 
         // Step 3: Send to FCM API
         println!("   🔧 [FCM-DEVICE] Step 3/4: Sending to FCM API...");
-        let api_start = Instant::now();
+
+        let _api_start = Instant::now();  // Add underscore
         let url = format!("https://fcm.googleapis.com/v1/projects/{}/messages:send", FIREBASE_PROJECT_ID);
         println!("   📤 [FCM-DEVICE] URL: {}", url);
 

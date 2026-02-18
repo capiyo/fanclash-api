@@ -256,7 +256,8 @@ pub async fn get_notification_preferences(
 
 // Update notification preferences
 pub async fn update_notification_preferences(
-    State(state): State<AppState>,
+
+    State(_state): State<AppState>,  // Add underscore
     Json(payload): Json<UpdatePreferencesRequest>,
 ) -> Result<Json<serde_json::Value>> {
     println!("⚙️ Updating notification preferences for user: {}", payload.user_id);
