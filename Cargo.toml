@@ -18,6 +18,7 @@ shuttle-secrets = "0.41.0"
 yup-oauth2 = "8.0"
 hyper = { version = "0.14", features = ["full"] }
 hyper-rustls = "0.24"
+rs-firebase-admin-sdk = "2.4.0"
 
 
 # Web Framework - EXACTLY AS YOU HAD

@@ -1,15 +1,12 @@
-// src/services/fcm_service.rs
-
 use reqwest::Client;
 use serde_json::{json, Value};
 use mongodb::{Collection, bson::{doc, DateTime as BsonDateTime}};
-use std::path::Path;
-use yup_oauth2::{read_service_account_key, ServiceAccountAuthenticator};
-use yup_oauth2::authenticator::Authenticator;
+use yup_oauth2::ServiceAccountKey;
 use anyhow::{Result, anyhow};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use futures_util::TryStreamExt;
+use std::env;
 
 use crate::{
     errors::AppError,
@@ -18,29 +15,54 @@ use crate::{
 };
 
 const FIREBASE_PROJECT_ID: &str = "clash-66865";
-const SERVICE_ACCOUNT_PATH: &str = "./firebase-service-account.json";
-
-// Use the Authenticator type with the connector type
-type HyperConnector = yup_oauth2::hyper_rustls::HttpsConnector<hyper::client::HttpConnector>;
-type AuthType = Authenticator<HyperConnector>;
+// REMOVE THIS: const SERVICE_ACCOUNT_PATH: &str = "./firebase-service-account.json";
 
 pub struct FCMService {
-    authenticator: Arc<Mutex<AuthType>>,
+    authenticator: Arc<Mutex<yup_oauth2::authenticator::Authenticator<
+        yup_oauth2::hyper_rustls::HttpsConnector<hyper::client::HttpConnector>
+    >>>,
     client: Client,
 }
 
 impl FCMService {
     pub async fn new() -> anyhow::Result<Self> {
-        // Load the service account key
-        let service_account_key = read_service_account_key(Path::new(SERVICE_ACCOUNT_PATH))
-            .await
-            .map_err(|e| anyhow!("Failed to read service account key: {}", e))?;
+        // READ FROM ENVIRONMENT VARIABLES INSTEAD OF FILE
+        println!("📖 Reading Firebase credentials from environment variables...");
 
-        // Build the authenticator - this returns Authenticator
-        let authenticator = ServiceAccountAuthenticator::builder(service_account_key)
+        // Get credentials from .env
+        let client_email = env::var("FIREBASE_CLIENT_EMAIL")
+            .map_err(|_| anyhow!("FIREBASE_CLIENT_EMAIL not set in environment"))?;
+
+        let private_key = env::var("FIREBASE_PRIVATE_KEY")
+            .map_err(|_| anyhow!("FIREBASE_PRIVATE_KEY not set in environment"))?;
+
+        let project_id = env::var("FIREBASE_PROJECT_ID")
+            .unwrap_or_else(|_| "clash-66865".to_string());
+
+        // Create service account key from environment variables
+        let service_account_key = ServiceAccountKey {
+            project_id: Some(project_id),
+            client_email: Some(client_email),
+            private_key: Some(private_key),
+            private_key_id: None,
+            client_id: None,
+            auth_uri: None,
+            token_uri: None,
+            auth_provider_x509_cert_url: None,
+            client_x509_cert_url: None,
+            universe_domain: None,
+            r#type: None,
+        };
+
+        println!("✅ Service account key created from environment variables");
+
+        // Build the authenticator
+        let authenticator = yup_oauth2::ServiceAccountAuthenticator::builder(service_account_key)
             .build()
             .await
             .map_err(|e| anyhow!("Failed to build authenticator: {}", e))?;
+
+        println!("✅ Authenticator built successfully");
 
         Ok(Self {
             authenticator: Arc::new(Mutex::new(authenticator)),
@@ -48,7 +70,6 @@ impl FCMService {
         })
     }
 
-    // Get access token method - FIXED using the correct approach
     async fn get_access_token(&self) -> anyhow::Result<String> {
         let mut auth = self.authenticator.lock().await;
 
@@ -61,7 +82,8 @@ impl FCMService {
             .map(|t| t.to_string())
             .ok_or_else(|| anyhow!("Access token was empty"))
     }
-    // Send notification to a specific user
+
+    // Rest of your methods remain the same...
     pub async fn send_to_user(
         &self,
         state: &AppState,
@@ -71,7 +93,6 @@ impl FCMService {
         data: Value,
         notification_type: &str,
     ) -> Result<bool, AppError> {
-        // Get user's FCM tokens
         let tokens_collection: Collection<FCMToken> = state.db.collection("fcm_tokens");
         let filter = doc! { "user_id": user_id };
 
@@ -214,8 +235,9 @@ impl FCMService {
     }
 }
 
-// Initialize once at app startup
 pub async fn init_fcm_service() -> anyhow::Result<Arc<FCMService>> {
+    println!("🚀 Initializing FCM Service from environment variables...");
     let service = FCMService::new().await?;
+    println!("✅ FCM Service initialized successfully!");
     Ok(Arc::new(service))
 }
