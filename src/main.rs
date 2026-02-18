@@ -1,3 +1,4 @@
+
 use axum::extract::State;
 use axum::{http::HeaderValue, http::Method, response::Json, routing::get, Router};
 use std::net::SocketAddr;
@@ -17,6 +18,7 @@ mod services;
 mod state;
 
 use database::connection::get_db_client;
+use services::fcm_service::init_fcm_service;  // ADD THIS IMPORT
 use state::AppState;
 
 #[tokio::main]
@@ -53,8 +55,6 @@ async fn initialize_app_state(db: mongodb::Database) -> AppState {
         }
         Err(e) => {
             tracing::error!("❌ Failed to initialize Cloudinary service: {}", e);
-            // You can choose to panic or continue without Cloudinary
-            // For now, we'll panic since Cloudinary is likely required for image uploads
             panic!("Failed to initialize Cloudinary service: {}", e);
         }
     };
@@ -93,19 +93,25 @@ async fn initialize_app_state(db: mongodb::Database) -> AppState {
         }
     }
 
+    // ===== ADD FCM INITIALIZATION HERE =====
+    tracing::info!("🔧 Attempting to initialize FCM service...");
+    match init_fcm_service().await {
+        Ok(fcm_service) => {
+            tracing::info!("✅ FCM service initialized successfully!");
+            app_state = app_state.with_fcm(fcm_service);
+        }
+        Err(e) => {
+            tracing::error!("❌ Failed to initialize FCM service: {}", e);
+            tracing::warn!("FCM notifications will be disabled");
+        }
+    }
+
     app_state
 }
+
 async fn build_router(app_state: AppState) -> Router {
     let cors = CorsLayer::new()
         .allow_origin(Any)
-        /* .allow_origin([
-                  "https://fanclash.netlify.app".parse::<HeaderValue>().unwrap(),
-        "https://fanclash-app.netlify.app".parse::<HeaderValue>().unwrap(),
-        "http://10.145.30.38:3001".parse::<HeaderValue>().unwrap(),
-        "http://192.168.56.1:3001".parse::<HeaderValue>().unwrap(),
-        "http://localhost:3000".parse::<HeaderValue>().unwrap(),
-        "http://localhost:3001".parse::<HeaderValue>().unwrap(),
-        "http://172.19.30.38:3001".parse::<HeaderValue>().unwrap(),)]*/
         .allow_methods([
             Method::GET,
             Method::POST,
@@ -121,7 +127,6 @@ async fn build_router(app_state: AppState) -> Router {
         .route("/health", get(health_check))
         .route("/api/health", get(api_health_check))
         .route("/api/simple_health_check", get(simple_health_check))
-         //.nest("/api/engagement", routes::fixture_engagement::routes())
         .nest("/api/auth", routes::auth::routes())
         .nest("/api/games", routes::games::routes())
         .nest("/api/posts", routes::posts::routes())
@@ -130,14 +135,9 @@ async fn build_router(app_state: AppState) -> Router {
         .nest("/api/mpesa", routes::mpesa::mpesa_routes())
         .nest("/api/votes", routes::vote_routes::vote_routes())
         .nest("/api/archive", routes::archive::archive_routes())
-          .nest("/api/chats", routes::chat::routes())
-
-        //.nest("/api/chats", routes::ch)
-       // .nest("/api/comments", routes::po))
-         .nest("/comments", routes::posts::comment_routes())
-         .nest("/api/notifications", routes::vote_routes::notification_routes())
-        //.nest("/api/comments", routes::co)
-        //.nest("/api/stats", routes::vote_routes::vote_stats_routes())
+        .nest("/api/chats", routes::chat::routes())
+        .nest("/comments", routes::posts::comment_routes())
+        .nest("/api/notifications", routes::vote_routes::notification_routes())
         .nest("/api/profile", routes::user_profile::user_profile_routes())
         .nest("/api", routes::posts::upload_routes())
         .layer(cors)
@@ -151,11 +151,6 @@ async fn start_server(app: Router) {
     tracing::info!("🚀 Server starting on {}", addr);
 
     match tokio::net::TcpListener::bind(addr).await {
-
-
-
-
-
         Ok(listener) => {
             axum::serve(listener, app).await.unwrap();
         }
@@ -176,6 +171,7 @@ async fn health_check() -> Json<serde_json::Value> {
         "timestamp": chrono::Utc::now().to_rfc3339(),
     }))
 }
+
 async fn simple_health_check() -> Json<serde_json::Value> {
     Json(serde_json::json!({
         "status": "ok",
@@ -196,6 +192,7 @@ async fn api_health_check(State(state): State<AppState>) -> Json<serde_json::Val
         "status": "healthy",
         "database": db_status,
         "mpesa": state.mpesa_service.is_some(),
+        "fcm": state.fcm_service.is_some(),  // ADD THIS to health check
         "timestamp": chrono::Utc::now().to_rfc3339(),
     }))
 }
