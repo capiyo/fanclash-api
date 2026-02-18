@@ -1,6 +1,6 @@
-
 use axum::extract::State;
-use axum::{http::HeaderValue, http::Method, response::Json, routing::get, Router};
+use axum::{http::Method, response::Json, routing::get, Router};
+use serde_json::{json, Value};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tower_http::cors::{Any, CorsLayer};
@@ -18,7 +18,7 @@ mod services;
 mod state;
 
 use database::connection::get_db_client;
-use services::fcm_service::init_fcm_service;  // ADD THIS IMPORT
+use services::fcm_service::init_fcm_service;
 use state::AppState;
 
 #[tokio::main]
@@ -93,7 +93,7 @@ async fn initialize_app_state(db: mongodb::Database) -> AppState {
         }
     }
 
-    // ===== ADD FCM INITIALIZATION HERE =====
+    // Initialize FCM service
     tracing::info!("🔧 Attempting to initialize FCM service...");
     match init_fcm_service().await {
         Ok(fcm_service) => {
@@ -126,6 +126,7 @@ async fn build_router(app_state: AppState) -> Router {
         .route("/", get(root_handler))
         .route("/health", get(health_check))
         .route("/api/health", get(api_health_check))
+        .route("/debug/fcm", get(debug_fcm))
         .route("/api/simple_health_check", get(simple_health_check))
         .nest("/api/auth", routes::auth::routes())
         .nest("/api/games", routes::games::routes())
@@ -165,22 +166,44 @@ async fn root_handler() -> &'static str {
     "🚀 Peer-to-Peer Betting API"
 }
 
-async fn health_check() -> Json<serde_json::Value> {
-    Json(serde_json::json!({
+// Debug endpoint to test FCM
+async fn debug_fcm(State(state): State<AppState>) -> Json<Value> {
+    if let Some(fcm) = &state.fcm_service {
+        // Try to get a token to verify it's working
+        match fcm.get_access_token().await {
+            Ok(token) => Json(json!({
+                "status": "FCM working",
+                "token_prefix": &token[0..20.min(token.len())],
+                "token_length": token.len(),
+            })),
+            Err(e) => Json(json!({
+                "status": "FCM error",
+                "error": e.to_string(),
+            })),
+        }
+    } else {
+        Json(json!({
+            "status": "FCM not initialized",
+        }))
+    }
+}
+
+async fn health_check() -> Json<Value> {
+    Json(json!({
         "status": "healthy",
         "timestamp": chrono::Utc::now().to_rfc3339(),
     }))
 }
 
-async fn simple_health_check() -> Json<serde_json::Value> {
-    Json(serde_json::json!({
+async fn simple_health_check() -> Json<Value> {
+    Json(json!({
         "status": "ok",
         "message": "API is reachable",
         "timestamp": chrono::Utc::now().to_rfc3339(),
     }))
 }
 
-async fn api_health_check(State(state): State<AppState>) -> Json<serde_json::Value> {
+async fn api_health_check(State(state): State<AppState>) -> Json<Value> {
     use mongodb::bson::doc;
 
     let db_status = match state.db.run_command(doc! {"ping": 1}).await {
@@ -188,11 +211,11 @@ async fn api_health_check(State(state): State<AppState>) -> Json<serde_json::Val
         Err(_) => "disconnected",
     };
 
-    Json(serde_json::json!({
+    Json(json!({
         "status": "healthy",
         "database": db_status,
         "mpesa": state.mpesa_service.is_some(),
-        "fcm": state.fcm_service.is_some(),  // ADD THIS to health check
+        "fcm": state.fcm_service.is_some(),
         "timestamp": chrono::Utc::now().to_rfc3339(),
     }))
 }

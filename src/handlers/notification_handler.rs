@@ -176,6 +176,7 @@ pub async fn send_bulk_notifications(
         "errors": errors,
     })))
 }
+
 // Get user's notifications
 pub async fn get_user_notifications(
     State(state): State<AppState>,
