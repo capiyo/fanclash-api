@@ -40,18 +40,20 @@ impl FCMService {
             .unwrap_or_else(|_| "clash-66865".to_string());
 
         // Create service account key from environment variables
+        // In src/services/fcm_service.rs - Fix the ServiceAccountKey creation
+
+        // Replace this section (around line 40-55):
         let service_account_key = ServiceAccountKey {
             project_id: Some(project_id),
-            client_email: Some(client_email),
-            private_key: Some(private_key),
-            private_key_id: None,
-            client_id: None,
-            auth_uri: None,
-            token_uri: None,
-            auth_provider_x509_cert_url: None,
-            client_x509_cert_url: None,
-            universe_domain: None,
-            r#type: None,
+            client_email,
+            private_key,
+            private_key_id: Some(String::new()),
+            client_id: Some(String::new()),
+            auth_uri: Some(String::new()),
+            token_uri: String::new(),
+            auth_provider_x509_cert_url: Some(String::new()),
+            client_x509_cert_url: Some(String::new()),
+            key_type: Some(String::new()),
         };
 
         println!("✅ Service account key created from environment variables");
@@ -71,7 +73,7 @@ impl FCMService {
     }
 
     async fn get_access_token(&self) -> anyhow::Result<String> {
-        let mut auth = self.authenticator.lock().await;
+        let  auth = self.authenticator.lock().await;
 
         let token = auth
             .token(&["https://www.googleapis.com/auth/firebase.messaging"])
