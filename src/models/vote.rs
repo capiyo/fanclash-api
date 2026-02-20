@@ -19,7 +19,7 @@ pub struct Vote {
     #[validate(length(min = 1, message = "Username is required"))]
     pub username: String,
 
-    #[serde(rename = "fixture_id")]
+    #[serde(rename = "fixtureId")]
     #[validate(length(min = 1, message = "Fixture ID is required"))]
     pub fixture_id: String,
 
@@ -55,7 +55,7 @@ pub struct CreateVote {
     #[validate(length(min = 1, message = "Username is required"))]
     pub username: String,
 
-    #[serde(rename = "fixture_id")]
+    #[serde(rename = "fixtureId")]
     #[validate(length(min = 1, message = "Fixture ID is required"))]
     pub fixture_id: String,
 
@@ -92,7 +92,7 @@ pub struct Like {
     #[validate(length(min = 1, message = "Username is required"))]
     pub username: String,
 
-    #[serde(rename = "fixture_id")]
+    #[serde(rename = "fixtureId")]
     #[validate(length(min = 1, message = "Fixture ID is required"))]
     pub fixture_id: String,
 
@@ -118,7 +118,7 @@ pub struct CreateLike {
     #[validate(length(min = 1, message = "Username is required"))]
     pub username: String,
 
-    #[serde(rename = "fixture_id")]
+    #[serde(rename = "fixtureId")]
     #[validate(length(min = 1, message = "Fixture ID is required"))]
     pub fixture_id: String,
 
@@ -143,7 +143,7 @@ pub struct Comment {
     #[validate(length(min = 1, message = "Username is required"))]
     pub username: String,
 
-    #[serde(rename = "fixture_id")]
+    #[serde(rename = "fixtureId")]
     #[validate(length(min = 1, message = "Fixture ID is required"))]
     pub fixture_id: String,
 
@@ -187,7 +187,7 @@ pub struct CreateComment {
     #[validate(length(min = 1, message = "Username is required"))]
     pub username: String,
 
-    #[serde(rename = "fixture_id")]
+    #[serde(rename = "fixtureId")]
     #[validate(length(min = 1, message = "Fixture ID is required"))]
     pub fixture_id: String,
 
@@ -214,7 +214,7 @@ pub struct CreateComment {
 // Vote statistics response
 #[derive(Debug, Serialize, Deserialize)]
 pub struct VoteStats {
-    #[serde(rename = "fixture_id")]
+    #[serde(rename = "fixtureId")]
     pub fixture_id: String,
 
     #[serde(rename = "homeTeam")]
@@ -248,7 +248,7 @@ pub struct VoteStats {
 // Like statistics response
 #[derive(Debug, Serialize, Deserialize)]
 pub struct LikeStats {
-    #[serde(rename = "fixture_id")]
+    #[serde(rename = "fixtureId")]
     pub fixture_id: String,
 
     #[serde(rename = "totalLikes")]
@@ -261,7 +261,7 @@ pub struct LikeStats {
 // Comment statistics response - UPDATED WITH SELECTION FIELDS
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CommentStats {
-    #[serde(rename = "fixture_id")]
+    #[serde(rename = "fixtureId")]
     pub fixture_id: String,
 
     #[serde(rename = "totalComments")]
@@ -293,9 +293,8 @@ pub struct CommentWithUser {
     #[serde(rename = "username")]
     pub username: String,
 
-    #[serde(rename = "fixture_id")]
+    #[serde(rename = "fixtureId")]
     pub fixture_id: String,
-
 
     // NEW FIELD: User's vote selection
     #[serde(rename = "selection")]
@@ -326,7 +325,7 @@ pub struct CommentWithUser {
 // User vote status
 #[derive(Debug, Serialize, Deserialize)]
 pub struct UserVoteStatus {
-    #[serde(rename = "fixture_id")]
+    #[serde(rename = "fixtureId")]
     pub fixture_id: String,
 
     #[serde(rename = "hasVoted")]
@@ -342,11 +341,10 @@ pub struct UserVoteStatus {
     pub user_comments_count: i64,
 }
 
-
 // Combined stats for a fixture
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FixtureStats {
-    #[serde(rename = "fixture_id")]
+    #[serde(rename = "fixtureId")]
     pub fixture_id: String,
 
     #[serde(rename = "homeTeam")]
@@ -413,7 +411,7 @@ pub struct StatsResponse {
 
 #[derive(Debug, Deserialize)]
 pub struct VoteQuery {
-    #[serde(rename = "fixture_id")]
+    #[serde(rename = "fixtureId")]
     pub fixture_id: Option<String>,
 
     #[serde(rename = "voterId")]
@@ -424,7 +422,7 @@ pub struct VoteQuery {
 
 #[derive(Debug, Deserialize)]
 pub struct CommentQuery {
-    #[serde(rename = "fixture_id")]
+    #[serde(rename = "fixtureId")]
     pub fixture_id: Option<String>,
 
     #[serde(rename = "voterId")]
@@ -757,7 +755,7 @@ pub struct TotalCountsResponse {
 // Counts for a specific fixture
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FixtureCounts {
-    #[serde(rename = "fixture_id")]
+    #[serde(rename = "fixtureId")]
     pub fixture_id: String,
 
     #[serde(rename = "homeTeam")]
@@ -808,7 +806,7 @@ pub struct FixtureCountsResponse {
 // Batch request for multiple fixtures
 #[derive(Debug, Deserialize)]
 pub struct BatchFixtureCountsRequest {
-    #[serde(rename = "fixture_ids")]
+    #[serde(rename = "fixtureIds")]
     pub fixture_ids: Vec<String>,
 
     #[serde(rename = "userId", skip_serializing_if = "Option::is_none")]
@@ -818,7 +816,7 @@ pub struct BatchFixtureCountsRequest {
 // Single fixture count item for batch response
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FixtureCountItem {
-    #[serde(rename = "fixture_id")]
+    #[serde(rename = "fixtureId")]
     pub fixture_id: String,
 
     #[serde(rename = "homeTeam")]
@@ -883,7 +881,7 @@ pub struct VoteBreakdown {
 // Detailed fixture stats including vote breakdown
 #[derive(Debug, Serialize, Deserialize)]
 pub struct DetailedFixtureStats {
-    #[serde(rename = "fixture_id")]
+    #[serde(rename = "fixtureId")]
     pub fixture_id: String,
 
     #[serde(rename = "homeTeam")]
@@ -961,7 +959,7 @@ pub struct UserActivitySummary {
 // Fixture summary with engagement metrics
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FixtureEngagement {
-    #[serde(rename = "fixture_id")]
+    #[serde(rename = "fixtureId")]
     pub fixture_id: String,
 
     #[serde(rename = "homeTeam")]
@@ -994,7 +992,7 @@ pub struct FixtureEngagement {
 // Real-time vote update
 #[derive(Debug, Serialize, Deserialize)]
 pub struct VoteUpdate {
-    #[serde(rename = "fixture_id")]
+    #[serde(rename = "fixtureId")]
     pub fixture_id: String,
 
     #[serde(rename = "homeVotes")]
@@ -1025,7 +1023,7 @@ pub struct LikeWithUser {
     #[serde(rename = "username")]
     pub username: String,
 
-    #[serde(rename = "fixture_id")]
+    #[serde(rename = "fixtureId")]
     pub fixture_id: String,
     pub action: String,
 
@@ -1042,7 +1040,7 @@ pub struct LikeWithUser {
 // Batch update request for multiple fixtures
 #[derive(Debug, Deserialize)]
 pub struct BatchStatsRequest {
-    #[serde(rename = "fixture_ids")]
+    #[serde(rename = "fixtureIds")]
     pub fixture_ids: Vec<String>,
 
     #[serde(rename = "includeVotes")]
@@ -1069,7 +1067,7 @@ pub struct BatchStatsResponse {
 // Popular fixture (for trending)
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PopularFixture {
-    #[serde(rename = "fixture_id")]
+    #[serde(rename = "fixtureId")]
     pub fixture_id: String,
 
     #[serde(rename = "homeTeam")]
@@ -1114,7 +1112,7 @@ pub struct UserVoteHistory {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct UserVoteEntry {
-    #[serde(rename = "fixture_id")]
+    #[serde(rename = "fixtureId")]
     pub fixture_id: String,
 
     #[serde(rename = "homeTeam")]
