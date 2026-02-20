@@ -1,4 +1,3 @@
-// src/models/chat.rs
 use bson::{oid::ObjectId, DateTime as BsonDateTime};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -26,6 +25,10 @@ pub struct ChatMessage {
     #[serde(rename = "senderName")]
     #[validate(length(min = 1, message = "Sender name is required"))]
     pub sender_name: String,
+
+    #[serde(rename = "receiverName")]
+    #[validate(length(min = 1, message = "Receiver name is required"))]
+    pub receiver_name: String,  // ADDED THIS FIELD
 
     #[serde(rename = "message")]
     #[validate(length(min = 1, max = 1000, message = "Message must be between 1 and 1000 characters"))]
@@ -56,6 +59,10 @@ pub struct CreateChatMessage {
     #[serde(rename = "sender_name")]
     #[validate(length(min = 1, message = "Sender name is required"))]
     pub sender_name: String,
+
+    #[serde(rename = "receiver_name")]  // ADDED THIS FIELD
+    #[validate(length(min = 1, message = "Receiver name is required"))]
+    pub receiver_name: String,
 
     #[serde(rename = "message")]
     #[validate(length(min = 1, max = 1000, message = "Message must be between 1 and 1000 characters"))]
@@ -100,6 +107,9 @@ pub struct ChatMessageResponse {
 
     #[serde(rename = "senderName")]
     pub sender_name: String,
+
+    #[serde(rename = "receiverName")]  // ADDED THIS FIELD
+    pub receiver_name: String,
 
     #[serde(rename = "message")]
     pub message: String,
@@ -192,6 +202,7 @@ impl From<ChatMessage> for ChatMessageResponse {
             sender_id: msg.sender_id,
             receiver_id: msg.receiver_id,
             sender_name: msg.sender_name,
+            receiver_name: msg.receiver_name,  // ADDED THIS FIELD
             message: msg.message,
             seen: msg.seen,
             created_at: chrono_dt.to_rfc3339(),

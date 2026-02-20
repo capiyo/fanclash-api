@@ -92,16 +92,20 @@ pub async fn create_message(
     Json(payload): Json<CreateChatMessage>,
 ) -> impl IntoResponse {
     println!("📝 Creating message for post: {}", post_id);
+    println!("📨 Sender: {} ({})", payload.sender_name, payload.sender_id);
+    println!("📨 Receiver: {} ({})", payload.receiver_name, payload.receiver_id); // Added log
+    println!("💬 Message: {}", payload.message);
 
     let collection = get_chat_collection(&state.db);
 
-    // Create new message document
+    // Create new message document with receiver_name
     let chat_message = ChatMessage {
         id: None,
         post_id: post_id.clone(),
         sender_id: payload.sender_id,
         receiver_id: payload.receiver_id,
         sender_name: payload.sender_name,
+        receiver_name: payload.receiver_name, // ADDED THIS FIELD
         message: payload.message,
         seen: false,
         created_at: bson::DateTime::from_chrono(Utc::now()),
@@ -201,7 +205,6 @@ pub async fn get_message(
 }
 
 // PUT /chat/messages/:message_id
-// PUT /chat/messages/:message_id
 pub async fn update_message(
     State(state): State<AppState>,
     Path(message_id): Path<String>,
@@ -218,7 +221,7 @@ pub async fn update_message(
             let update = doc! {
                 "$set": {
                     "message": &payload.message,
-                    "updatedAt": bson::DateTime::from_chrono(Utc::now())  // Fixed here
+                    "updatedAt": bson::DateTime::from_chrono(Utc::now())
                 }
             };
 

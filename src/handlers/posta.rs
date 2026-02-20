@@ -462,6 +462,76 @@ pub async fn search_posts(
         }
     })))
 }
+//use crate::models::posta::PostType; // Make sure this is imported
+
+// Add this new handler
+pub async fn migrate_posts(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>> {
+    let request_id = uuid::Uuid::new_v4();
+    log_info!("[{}] Starting post migration", request_id);
+
+    let collection: Collection<Post> = state.db.collection("posts");
+
+    // Find all posts without post_type
+    let filter = doc! { "post_type": { "$exists": false } };
+    let cursor = collection.find(filter.clone()).await?;
+    let posts: Vec<Post> = cursor.try_collect().await?;
+    let total_posts = posts.len();
+
+    let mut updated_count = 0;
+    let mut skipped_count = 0;
+
+    for mut post in posts {
+        // Determine post type from content
+        let post_type_str = match (post.caption.is_some(), post.image_url.is_some()) {
+            (true, true) => "TextAndImage",
+            (true, false) => "Text",
+            (false, true) => "Image",
+            (false, false) => "Text", // default
+        };
+
+        // Convert string to PostType enum
+        let post_type = match post_type_str {
+            "Text" => PostType::Text,
+            "Image" => PostType::Image,
+            "TextAndImage" => PostType::TextAndImage,
+            _ => PostType::Text,
+        };
+
+        // Update the document
+        let update = doc! {
+            "$set": { "post_type": post_type_str }
+        };
+
+        if let Some(id) = post._id {
+            let result = collection.update_one(
+                doc! { "_id": id },
+                update
+            ).await?;
+
+            if result.modified_count > 0 {
+                updated_count += 1;
+                log_info!("[{}] Updated post {} with type {}", request_id, id, post_type_str);
+            } else {
+                skipped_count += 1;
+            }
+        }
+    }
+
+    log_info!("[{}] Migration complete. Updated: {}, Skipped: {}, Total: {}",
+        request_id, updated_count, skipped_count, total_posts);
+
+    Ok(Json(json!({
+        "success": true,
+        "message": "Migration completed",
+        "stats": {
+            "total_posts_found": total_posts,
+            "updated": updated_count,
+            "skipped": skipped_count
+        }
+    })))
+}
 
 pub async fn get_post_by_id(
     State(state): State<AppState>,
@@ -1383,3 +1453,6 @@ pub async fn unlike_comment(
         None => Err(AppError::invalid_data("Comment not found after update")),
     }
 }
+// Make sure this is imported
+
+// Add this new handler
