@@ -500,21 +500,25 @@ pub async fn create_like(
     let collection: Collection<Like> = state.db.collection("likes");
     let existing_like_filter = doc! {
         "voterId": &payload.voter_id,
-        "fixture_id": &payload.fixture_id,
+        "fixtureId": &payload.fixture_id,  // Fixed: should be "fixtureId" not "fixture_id"
     };
 
     let existing_like = collection.find_one(existing_like_filter.clone()).await?;
     let total_likes: i64;
     let message: String;
+    let success: bool;
+    let like_id: Option<String> = None;
 
-    if let Some(_like) = existing_like {
+    if let Some(like) = existing_like {
         if payload.action == "unlike" {
             collection.delete_one(existing_like_filter).await?;
-            let fixture_filter = doc! { "fixture_id": &payload.fixture_id };
+            let fixture_filter = doc! { "fixtureId": &payload.fixture_id };  // Fixed field name
             total_likes = collection.count_documents(fixture_filter).await? as i64;
             message = "Like removed successfully".to_string();
+            success = true;
             println!("👎 Like removed for fixture: {} by {}", payload.fixture_id, payload.username);
         } else {
+            // Already liked and trying to like again
             return Ok(Json(LikeResponse {
                 success: false,
                 message: "User already liked this fixture".to_string(),
@@ -542,18 +546,25 @@ pub async fn create_like(
             created_at: Some(BsonDateTime::from_chrono(Utc::now())),
         };
 
-        let _insert_result = collection.insert_one(like).await?;
-        let fixture_filter = doc! { "fixture_id": &payload.fixture_id };
+        let insert_result = collection.insert_one(like).await?;
+        let fixture_filter = doc! { "fixtureId": &payload.fixture_id };  // Fixed field name
         total_likes = collection.count_documents(fixture_filter).await? as i64;
         message = "Like added successfully".to_string();
+        success = true;
+
+        // Get the inserted ID if needed
+        if let Some(id) = insert_result.inserted_id.as_object_id() {
+            like_id = Some(id.to_hex());
+        }
+
         println!("✅ Like created for fixture: {} by {}", payload.fixture_id, payload.username);
     }
 
-    // Return the response - THIS WAS MISSING
+    // Return the response
     Ok(Json(LikeResponse {
-        success: true,
+        success,
         message,
-        like_id: None,
+        like_id,
         total_likes,
     }))
 }

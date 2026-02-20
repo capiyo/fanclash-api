@@ -404,47 +404,94 @@ pub fn validate_selection(selection: &str) -> Result<(), String> {
 }
 
 // Helper function for timestamp parsing - FIXED
+// Helper function for timestamp parsing - FIXED VERSION
 pub fn parse_iso_timestamp(timestamp_str: &str) -> Result<BsonDateTime, String> {
+    // Log the timestamp we're trying to parse for debugging
+    println!("🔍 Parsing timestamp: '{}'", timestamp_str);
+
     // Try RFC 3339 format first (most common)
     if let Ok(dt) = DateTime::parse_from_rfc3339(timestamp_str) {
+        println!("✅ Parsed as RFC 3339: {}", dt);
         return Ok(BsonDateTime::from_millis(dt.timestamp_millis()));
     }
 
-    // Try ISO 8601 format with 'Z'
-    if let Ok(dt) = DateTime::parse_from_str(timestamp_str, "%Y-%m-%dT%H:%M:%S%.fZ") {
-        return Ok(BsonDateTime::from_millis(dt.timestamp_millis()));
-    }
+    // Try parsing as DateTime with Utc timezone (for strings ending with Z)
+    if timestamp_str.ends_with('Z') {
+        // Remove the Z and parse as naive datetime, then add UTC
+        let without_z = timestamp_str.trim_end_matches('Z');
 
-    // Try without fractional seconds
-    if let Ok(dt) = DateTime::parse_from_str(timestamp_str, "%Y-%m-%dT%H:%M:%SZ") {
-        return Ok(BsonDateTime::from_millis(dt.timestamp_millis()));
-    }
+        // Try with milliseconds
+        if let Ok(ndt) = NaiveDateTime::parse_from_str(without_z, "%Y-%m-%dT%H:%M:%S%.f") {
+            let dt_utc = DateTime::<Utc>::from_naive_utc_and_offset(ndt, Utc);
+            println!("✅ Parsed with milliseconds: {}", dt_utc);
+            return Ok(BsonDateTime::from_millis(dt_utc.timestamp_millis()));
+        }
 
-    // Try as a simple date time string
-    let dt_clean = timestamp_str.replace("T", " ").replace("Z", "");
-    if let Ok(ndt) = NaiveDateTime::parse_from_str(&dt_clean, "%Y-%m-%d %H:%M:%S") {
-        let dt_utc = ndt.and_utc();
-        return Ok(BsonDateTime::from_millis(dt_utc.timestamp_millis()));
-    }
-
-    // Try with milliseconds
-    if let Ok(ndt) = NaiveDateTime::parse_from_str(&dt_clean, "%Y-%m-%d %H:%M:%S%.f") {
-        let dt_utc = ndt.and_utc();
-        return Ok(BsonDateTime::from_millis(dt_utc.timestamp_millis()));
-    }
-
-    // Try Unix timestamp - FIXED timestamp_opt usage
-    if let Ok(ts) = timestamp_str.parse::<i64>() {
-        // Use timestamp_millis or timestamp_opt properly
-        if let Some(dt) = Utc.timestamp_opt(ts, 0).single() {
-            return Ok(BsonDateTime::from_millis(dt.timestamp_millis()));
-        } else {
-            return Err(format!("Invalid Unix timestamp: {}", ts));
+        // Try without milliseconds
+        if let Ok(ndt) = NaiveDateTime::parse_from_str(without_z, "%Y-%m-%dT%H:%M:%S") {
+            let dt_utc = DateTime::<Utc>::from_naive_utc_and_offset(ndt, Utc);
+            println!("✅ Parsed without milliseconds: {}", dt_utc);
+            return Ok(BsonDateTime::from_millis(dt_utc.timestamp_millis()));
         }
     }
 
-    // If all parsing fails, return error
-    Err(format!("Invalid timestamp format: {}", timestamp_str))
+    // Try ISO 8601 format with explicit UTC offset (+00:00)
+    if let Ok(dt) = DateTime::parse_from_str(timestamp_str, "%Y-%m-%dT%H:%M:%S%.f%:z") {
+        println!("✅ Parsed with timezone offset: {}", dt);
+        return Ok(BsonDateTime::from_millis(dt.timestamp_millis()));
+    }
+
+    // Try without fractional seconds and with timezone offset
+    if let Ok(dt) = DateTime::parse_from_str(timestamp_str, "%Y-%m-%dT%H:%M:%S%:z") {
+        println!("✅ Parsed with timezone offset (no ms): {}", dt);
+        return Ok(BsonDateTime::from_millis(dt.timestamp_millis()));
+    }
+
+    // Try as a simple date time string (space instead of T)
+    let dt_clean = timestamp_str.replace('T', " ").replace('Z', "");
+
+    // Try with milliseconds
+    if let Ok(ndt) = NaiveDateTime::parse_from_str(&dt_clean, "%Y-%m-%d %H:%M:%S%.f") {
+        let dt_utc = DateTime::<Utc>::from_naive_utc_and_offset(ndt, Utc);
+        println!("✅ Parsed as space-separated with ms: {}", dt_utc);
+        return Ok(BsonDateTime::from_millis(dt_utc.timestamp_millis()));
+    }
+
+    // Try without milliseconds
+    if let Ok(ndt) = NaiveDateTime::parse_from_str(&dt_clean, "%Y-%m-%d %H:%M:%S") {
+        let dt_utc = DateTime::<Utc>::from_naive_utc_and_offset(ndt, Utc);
+        println!("✅ Parsed as space-separated: {}", dt_utc);
+        return Ok(BsonDateTime::from_millis(dt_utc.timestamp_millis()));
+    }
+
+    // Try Unix timestamp (seconds since epoch)
+    if let Ok(ts) = timestamp_str.parse::<i64>() {
+        // Check if it's seconds (10 digits) or milliseconds (13 digits)
+        if timestamp_str.len() == 10 {
+            // Seconds timestamp
+            if let Some(dt) = DateTime::from_timestamp(ts, 0) {
+                println!("✅ Parsed as Unix seconds: {}", dt);
+                return Ok(BsonDateTime::from_millis(dt.timestamp_millis()));
+            }
+        } else if timestamp_str.len() >= 13 {
+            // Milliseconds timestamp
+            return Ok(BsonDateTime::from_millis(ts));
+        }
+    }
+
+    // Try parsing as a date only (for fallback)
+    if let Ok(ndt) = NaiveDate::parse_from_str(timestamp_str, "%Y-%m-%d") {
+        let dt_utc = ndt.and_hms_opt(0, 0, 0).unwrap().and_utc();
+        println!("⚠️ Parsed as date only: {}", dt_utc);
+        return Ok(BsonDateTime::from_millis(dt_utc.timestamp_millis()));
+    }
+
+    // If all parsing fails, return error with helpful message
+    println!("❌ Failed to parse timestamp: '{}'", timestamp_str);
+    Err(format!(
+        "Invalid timestamp format: '{}'. Expected ISO 8601 format (e.g., 2024-01-01T12:00:00Z)",
+        timestamp_str
+    ))
 }
 
 // Simple version that returns current time on failure
@@ -962,37 +1009,50 @@ impl Vote {
 // Helper function to create a Like from CreateLike
 impl Like {
     pub fn from_create_like(create_like: CreateLike) -> Self {
-        Like {
-            id: None,
-            voter_id: create_like.voter_id,
-            username: create_like.username,
-            fixture_id: create_like.fixture_id,
-            action: create_like.action,
-            like_timestamp: BsonDateTime::from_millis(Utc::now().timestamp_millis()),
-            created_at: Some(BsonDateTime::from_millis(Utc::now().timestamp_millis())),
+            // Use current time instead of trying to parse a timestamp
+            // Since the Flutter app doesn't send a timestamp for likes
+            let current_time = BsonDateTime::from_millis(Utc::now().timestamp_millis());
+
+            println!("📝 Creating like for fixture: {}, user: {}, action: {}",
+                     create_like.fixture_id, create_like.voter_id, create_like.action);
+
+            Like {
+                id: None,
+                voter_id: create_like.voter_id,
+                username: create_like.username,
+                fixture_id: create_like.fixture_id,
+                action: create_like.action,
+                like_timestamp: current_time, // Use current time
+                created_at: Some(current_time),
+            }
         }
-    }
 }
 
 // Helper function to create a Comment from CreateComment
 impl Comment {
     pub fn from_create_comment(create_comment: CreateComment) -> Result<Self, String> {
-        let comment_timestamp = parse_iso_timestamp(&create_comment.timestamp)?;
+           // Try to parse the timestamp, but if it fails, use current time and log warning
+           let comment_timestamp = match parse_iso_timestamp(&create_comment.timestamp) {
+               Ok(ts) => ts,
+               Err(e) => {
+                   println!("⚠️ Timestamp parsing failed: {}, using current time", e);
+                   BsonDateTime::from_millis(Utc::now().timestamp_millis())
+               }
+           };
 
-        Ok(Comment {
-            id: None,
-            voter_id: create_comment.voter_id,
-            username: create_comment.username,
-            fixture_id: create_comment.fixture_id,
-            comment: create_comment.comment,
-            timestamp: create_comment.timestamp,
-            comment_timestamp,
-            created_at: Some(BsonDateTime::from_millis(Utc::now().timestamp_millis())),
-            likes: Some(0),
-            replies: Some(Vec::new()),
-        })
-    }
-}
+           Ok(Comment {
+               id: None,
+               voter_id: create_comment.voter_id,
+               username: create_comment.username,
+               fixture_id: create_comment.fixture_id,
+               comment: create_comment.comment,
+               timestamp: create_comment.timestamp,
+               comment_timestamp,
+               created_at: Some(BsonDateTime::from_millis(Utc::now().timestamp_millis())),
+               likes: Some(0),
+               replies: Some(Vec::new()),
+           })
+       }
 
 // Helper for BsonDateTime serialization
 pub fn bson_datetime_to_iso_string(dt: &BsonDateTime) -> String {
