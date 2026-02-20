@@ -1,4 +1,3 @@
-// src/handlers/chat_handlers.rs
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
@@ -9,41 +8,12 @@ use bson::{doc, oid::ObjectId};
 use chrono::Utc;
 use futures::TryStreamExt;
 use mongodb::{Collection, Database};
-use serde::{Deserialize, Serialize};
 
-use crate::models::chat::{ChatMessage, ChatMessageResponse, CreateChatMessage, UpdateChatMessage, MarkAsSeenRequest};
+use crate::models::chat::{
+    ChatMessage, ChatMessageResponse, CreateChatMessage, UpdateChatMessage,
+    MarkAsSeenRequest, PaginationQuery, ApiResponse
+};
 use crate::state::AppState;
-
-#[derive(Debug, Serialize)]
-pub struct ApiResponse<T> {
-    pub success: bool,
-    pub data: Option<T>,
-    pub message: Option<String>,
-}
-
-impl<T> ApiResponse<T> {
-    pub fn success(data: T) -> Self {
-        Self {
-            success: true,
-            data: Some(data),
-            message: None,
-        }
-    }
-
-    pub fn error(message: String) -> Self {
-        Self {
-            success: false,
-            data: None,
-            message: Some(message),
-        }
-    }
-}
-
-#[derive(Debug, Deserialize)]
-pub struct PaginationQuery {
-    pub page: Option<i64>,
-    pub limit: Option<i64>,
-}
 
 // Get collection helper
 fn get_chat_collection(db: &Database) -> Collection<ChatMessage> {
@@ -56,19 +26,23 @@ pub async fn get_post_messages(
     Path(post_id): Path<String>,
     Query(params): Query<PaginationQuery>,
 ) -> impl IntoResponse {
+    println!("📥 Fetching messages for post: {}", post_id);
+
     let collection = get_chat_collection(&state.db);
 
     let page = params.page.unwrap_or(1);
     let limit = params.limit.unwrap_or(50);
     let skip = (page - 1) * limit;
 
-    let filter = doc! { "post_id": &post_id };
+    let filter = doc! { "postId": &post_id };
 
     match collection.count_documents(filter.clone()).await {
         Ok(total) => {
-            let mut cursor = collection
+            println!("📊 Total messages: {}", total);
+
+            let cursor = collection
                 .find(filter)
-                .sort(doc! { "created_at": -1 })
+                .sort(doc! { "createdAt": 1 })
                 .skip(skip as u64)
                 .limit(limit as i64)
                 .await;
@@ -80,26 +54,34 @@ pub async fn get_post_messages(
                         messages.push(ChatMessageResponse::from(message));
                     }
 
+                    println!("✅ Found {} messages", messages.len());
+
                     let response = serde_json::json!({
                         "messages": messages,
                         "total": total,
                         "page": page,
                         "limit": limit,
-                        "total_pages": (total as f64 / limit as f64).ceil() as i64
+                        "totalPages": (total as f64 / limit as f64).ceil() as i64
                     });
 
                     (StatusCode::OK, Json(ApiResponse::success(response)))
                 }
-                Err(err) => (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ApiResponse::error(format!("Failed to fetch messages: {}", err))),
-                ),
+                Err(err) => {
+                    eprintln!("❌ Error fetching messages: {}", err);
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(ApiResponse::error(format!("Failed to fetch messages: {}", err))),
+                    )
+                }
             }
         }
-        Err(err) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiResponse::error(format!("Failed to count messages: {}", err))),
-        ),
+        Err(err) => {
+            eprintln!("❌ Error counting messages: {}", err);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiResponse::error(format!("Failed to count messages: {}", err))),
+            )
+        }
     }
 }
 
@@ -109,46 +91,67 @@ pub async fn create_message(
     Path(post_id): Path<String>,
     Json(payload): Json<CreateChatMessage>,
 ) -> impl IntoResponse {
+    println!("📝 Creating message for post: {}", post_id);
+
     let collection = get_chat_collection(&state.db);
 
-    // Validate post_id matches
-    if payload.post_id != post_id {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(ApiResponse::error("Post ID mismatch".to_string())),
-        );
-    }
-
-    // Create new message
+    // Create new message document
     let chat_message = ChatMessage {
         id: None,
-        post_id: payload.post_id,
-        user_id: payload.user_id,
-        username: payload.username,
+        post_id: post_id.clone(),
+        sender_id: payload.sender_id,
+        receiver_id: payload.receiver_id,
+        sender_name: payload.sender_name,
         message: payload.message,
         seen: false,
-        created_at: Utc::now(),
+        created_at: bson::DateTime::from_chrono(Utc::now()),
+        updated_at: None,
     };
 
-    match collection.insert_one(chat_message).await {
-        Ok(result) => {
-            // Fetch the created message
-            let filter = doc! { "_id": result.inserted_id.as_object_id().unwrap() };
-            match collection.find_one(filter).await {
-                Ok(Some(message)) => {
-                    let response = ChatMessageResponse::from(message);
-                    (StatusCode::CREATED, Json(ApiResponse::success(response)))
+    println!("💾 Saving message to database...");
+
+    match collection.insert_one(&chat_message).await {
+        Ok(insert_result) => {
+            println!("✅ Message inserted with ID: {:?}", insert_result.inserted_id);
+
+            if let Some(object_id) = insert_result.inserted_id.as_object_id() {
+                let filter = doc! { "_id": object_id };
+                match collection.find_one(filter).await {
+                    Ok(Some(saved_message)) => {
+                        let response = ChatMessageResponse::from(saved_message);
+                        println!("✅ Message saved and retrieved successfully");
+                        (StatusCode::CREATED, Json(ApiResponse::success(response)))
+                    }
+                    Ok(None) => {
+                        eprintln!("❌ Message was inserted but could not be retrieved");
+                        (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(ApiResponse::error("Message saved but could not be retrieved".to_string())),
+                        )
+                    }
+                    Err(err) => {
+                        eprintln!("❌ Error retrieving saved message: {}", err);
+                        (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(ApiResponse::error(format!("Failed to retrieve saved message: {}", err))),
+                        )
+                    }
                 }
-                _ => (
+            } else {
+                eprintln!("❌ Could not extract inserted ID");
+                (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ApiResponse::error("Failed to retrieve created message".to_string())),
-                ),
+                    Json(ApiResponse::error("Failed to get message ID".to_string())),
+                )
             }
         }
-        Err(err) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiResponse::error(format!("Failed to create message: {}", err))),
-        ),
+        Err(err) => {
+            eprintln!("❌ Failed to insert message: {}", err);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiResponse::error(format!("Failed to create message: {}", err))),
+            )
+        }
     }
 }
 
@@ -157,6 +160,8 @@ pub async fn get_message(
     State(state): State<AppState>,
     Path(message_id): Path<String>,
 ) -> impl IntoResponse {
+    println!("🔍 Fetching message by ID: {}", message_id);
+
     let collection = get_chat_collection(&state.db);
 
     match ObjectId::parse_str(&message_id) {
@@ -165,69 +170,87 @@ pub async fn get_message(
 
             match collection.find_one(filter).await {
                 Ok(Some(message)) => {
+                    println!("✅ Found message: {}", message_id);
                     let response = ChatMessageResponse::from(message);
                     (StatusCode::OK, Json(ApiResponse::success(response)))
                 }
-                Ok(None) => (
-                    StatusCode::NOT_FOUND,
-                    Json(ApiResponse::error("Message not found".to_string())),
-                ),
-                Err(err) => (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ApiResponse::error(format!("Failed to fetch message: {}", err))),
-                ),
+                Ok(None) => {
+                    println!("❌ Message not found: {}", message_id);
+                    (
+                        StatusCode::NOT_FOUND,
+                        Json(ApiResponse::error("Message not found".to_string())),
+                    )
+                }
+                Err(err) => {
+                    eprintln!("❌ Error fetching message: {}", err);
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(ApiResponse::error(format!("Failed to fetch message: {}", err))),
+                    )
+                }
             }
         }
-        Err(_) => (
-            StatusCode::BAD_REQUEST,
-            Json(ApiResponse::error("Invalid message ID format".to_string())),
-        ),
+        Err(_) => {
+            eprintln!("❌ Invalid message ID format: {}", message_id);
+            (
+                StatusCode::BAD_REQUEST,
+                Json(ApiResponse::error("Invalid message ID format".to_string())),
+            )
+        }
     }
 }
 
+// PUT /chat/messages/:message_id
 // PUT /chat/messages/:message_id
 pub async fn update_message(
     State(state): State<AppState>,
     Path(message_id): Path<String>,
     Json(payload): Json<UpdateChatMessage>,
 ) -> impl IntoResponse {
-    let collection = get_chat_collection(&state.db);
+    println!("📝 Updating message: {}", message_id);
 
-    // In real app, get user_id from auth
-    let user_id = "current_user_id".to_string();
+    let collection = get_chat_collection(&state.db);
 
     match ObjectId::parse_str(&message_id) {
         Ok(object_id) => {
-            let filter = doc! {
-                "_id": object_id,
-                "user_id": &user_id // Users can only update their own messages
-            };
+            let filter = doc! { "_id": object_id };
 
             let update = doc! {
                 "$set": {
-                    "message": &payload.message
+                    "message": &payload.message,
+                    "updatedAt": bson::DateTime::from_chrono(Utc::now())  // Fixed here
                 }
             };
 
             match collection.find_one_and_update(filter, update).await {
-                Ok(Some(message)) => {
-                    let response = ChatMessageResponse::from(message);
+                Ok(Some(updated_message)) => {
+                    println!("✅ Message updated successfully: {}", message_id);
+                    let response = ChatMessageResponse::from(updated_message);
                     (StatusCode::OK, Json(ApiResponse::success(response)))
                 }
-                Ok(None) => (
-                    StatusCode::NOT_FOUND,
-                    Json(ApiResponse::error("Message not found or unauthorized".to_string())),
-                ),
-                Err(err) => (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ApiResponse::error(format!("Failed to update message: {}", err))),
-                ),
+                Ok(None) => {
+                    println!("❌ Message not found for update: {}", message_id);
+                    (
+                        StatusCode::NOT_FOUND,
+                        Json(ApiResponse::error("Message not found".to_string())),
+                    )
+                }
+                Err(err) => {
+                    eprintln!("❌ Error updating message: {}", err);
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(ApiResponse::error(format!("Failed to update message: {}", err))),
+                    )
+                }
             }
         }
-        Err(_) => (
-            StatusCode::BAD_REQUEST,
-            Json(ApiResponse::error("Invalid message ID format".to_string())),
-        ),
+        Err(_) => {
+            eprintln!("❌ Invalid message ID format: {}", message_id);
+            (
+                StatusCode::BAD_REQUEST,
+                Json(ApiResponse::error("Invalid message ID format".to_string())),
+            )
+        }
     }
 }
 
@@ -236,37 +259,45 @@ pub async fn delete_message(
     State(state): State<AppState>,
     Path(message_id): Path<String>,
 ) -> impl IntoResponse {
-    let collection = get_chat_collection(&state.db);
+    println!("🗑️ Deleting message: {}", message_id);
 
-    // In real app, get user_id from auth
-    let user_id = "current_user_id".to_string();
+    let collection = get_chat_collection(&state.db);
 
     match ObjectId::parse_str(&message_id) {
         Ok(object_id) => {
-            let filter = doc! {
-                "_id": object_id,
-                "user_id": &user_id // Users can only delete their own messages
-            };
+            let filter = doc! { "_id": object_id };
 
             match collection.delete_one(filter).await {
-                Ok(result) if result.deleted_count > 0 => (
-                    StatusCode::OK,
-                    Json(ApiResponse::success("Message deleted successfully".to_string())),
-                ),
-                Ok(_) => (
-                    StatusCode::NOT_FOUND,
-                    Json(ApiResponse::error("Message not found or unauthorized".to_string())),
-                ),
-                Err(err) => (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ApiResponse::error(format!("Failed to delete message: {}", err))),
-                ),
+                Ok(delete_result) if delete_result.deleted_count > 0 => {
+                    println!("✅ Message deleted successfully: {}", message_id);
+                    (
+                        StatusCode::OK,
+                        Json(ApiResponse::success("Message deleted successfully".to_string())),
+                    )
+                }
+                Ok(_) => {
+                    println!("❌ Message not found for deletion: {}", message_id);
+                    (
+                        StatusCode::NOT_FOUND,
+                        Json(ApiResponse::error("Message not found".to_string())),
+                    )
+                }
+                Err(err) => {
+                    eprintln!("❌ Error deleting message: {}", err);
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(ApiResponse::error(format!("Failed to delete message: {}", err))),
+                    )
+                }
             }
         }
-        Err(_) => (
-            StatusCode::BAD_REQUEST,
-            Json(ApiResponse::error("Invalid message ID format".to_string())),
-        ),
+        Err(_) => {
+            eprintln!("❌ Invalid message ID format: {}", message_id);
+            (
+                StatusCode::BAD_REQUEST,
+                Json(ApiResponse::error("Invalid message ID format".to_string())),
+            )
+        }
     }
 }
 
@@ -275,48 +306,39 @@ pub async fn mark_messages_as_seen(
     State(state): State<AppState>,
     Json(payload): Json<MarkAsSeenRequest>,
 ) -> impl IntoResponse {
+    println!("👁️ Marking messages as seen for post: {}", payload.post_id);
+
     let collection = get_chat_collection(&state.db);
 
-    // In real app, get user_id from auth
-    let user_id = "current_user_id".to_string();
+    let filter = doc! {
+        "postId": &payload.post_id,
+        "receiverId": &payload.user_id,
+        "seen": false
+    };
 
-    // Convert string IDs to ObjectId
-    let object_ids: Result<Vec<ObjectId>, _> = payload.message_ids
-        .iter()
-        .map(|id| ObjectId::parse_str(id))
-        .collect();
-
-    match object_ids {
-        Ok(object_ids) => {
-            // User can't mark their own messages as seen
-            let filter = doc! {
-                "_id": { "$in": object_ids },
-                "user_id": { "$ne": &user_id }
-            };
-
-            let update = doc! {
-                "$set": {
-                    "seen": true
-                }
-            };
-
-            match collection.update_many(filter, update).await {
-                Ok(result) => {
-                    let response = serde_json::json!({
-                        "marked_count": result.modified_count
-                    });
-                    (StatusCode::OK, Json(ApiResponse::success(response)))
-                }
-                Err(err) => (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ApiResponse::error(format!("Failed to mark messages: {}", err))),
-                ),
-            }
+    let update = doc! {
+        "$set": {
+            "seen": true
         }
-        Err(_) => (
-            StatusCode::BAD_REQUEST,
-            Json(ApiResponse::error("Invalid message ID format".to_string())),
-        ),
+    };
+
+    match collection.update_many(filter, update).await {
+        Ok(update_result) => {
+            println!("✅ Marked {} messages as seen", update_result.modified_count);
+
+            let response = serde_json::json!({
+                "marked_count": update_result.modified_count
+            });
+
+            (StatusCode::OK, Json(ApiResponse::success(response)))
+        }
+        Err(err) => {
+            eprintln!("❌ Error marking messages as seen: {}", err);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiResponse::error(format!("Failed to mark messages: {}", err))),
+            )
+        }
     }
 }
 
@@ -325,26 +347,36 @@ pub async fn get_unread_count(
     State(state): State<AppState>,
     Path(post_id): Path<String>,
 ) -> impl IntoResponse {
+    println!("🔢 Getting unread count for post: {}", post_id);
+
     let collection = get_chat_collection(&state.db);
 
-    // In real app, get user_id from auth
-    let user_id = "current_user_id".to_string();
-
     let filter = doc! {
-        "post_id": &post_id,
-        "user_id": { "$ne": &user_id }, // Messages from other users
+        "postId": &post_id,
         "seen": false
     };
 
     match collection.count_documents(filter).await {
-        Ok(count) => (
-            StatusCode::OK,
-            Json(ApiResponse::success(count)),
-        ),
-        Err(err) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiResponse::error(format!("Failed to count unread messages: {}", err))),
-        ),
+        Ok(count) => {
+            println!("✅ Unread messages for post {}: {}", post_id, count);
+
+            let response = serde_json::json!({
+                "post_id": post_id,
+                "unread_count": count
+            });
+
+            (
+                StatusCode::OK,
+                Json(ApiResponse::success(response)),
+            )
+        }
+        Err(err) => {
+            eprintln!("❌ Error counting unread messages: {}", err);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiResponse::error(format!("Failed to count unread messages: {}", err))),
+            )
+        }
     }
 }
 
@@ -354,19 +386,28 @@ pub async fn get_user_messages(
     Path(user_id): Path<String>,
     Query(params): Query<PaginationQuery>,
 ) -> impl IntoResponse {
+    println!("🔍 Fetching messages for user: {}", user_id);
+
     let collection = get_chat_collection(&state.db);
 
     let page = params.page.unwrap_or(1);
     let limit = params.limit.unwrap_or(50);
     let skip = (page - 1) * limit;
 
-    let filter = doc! { "user_id": &user_id };
+    let filter = doc! {
+        "$or": [
+            { "senderId": &user_id },
+            { "receiverId": &user_id }
+        ]
+    };
 
     match collection.count_documents(filter.clone()).await {
         Ok(total) => {
-            let  cursor = collection
+            println!("📊 Total messages for user {}: {}", user_id, total);
+
+            let cursor = collection
                 .find(filter)
-                .sort(doc! { "created_at": -1 })
+                .sort(doc! { "createdAt": -1 })
                 .skip(skip as u64)
                 .limit(limit as i64)
                 .await;
@@ -377,6 +418,8 @@ pub async fn get_user_messages(
                     while let Ok(Some(message)) = cursor.try_next().await {
                         messages.push(ChatMessageResponse::from(message));
                     }
+
+                    println!("✅ Found {} messages for user {}", messages.len(), user_id);
 
                     let response = serde_json::json!({
                         "messages": messages,
@@ -387,15 +430,34 @@ pub async fn get_user_messages(
 
                     (StatusCode::OK, Json(ApiResponse::success(response)))
                 }
-                Err(err) => (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ApiResponse::error(format!("Failed to fetch user messages: {}", err))),
-                ),
+                Err(err) => {
+                    eprintln!("❌ Error fetching user messages: {}", err);
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(ApiResponse::error(format!("Failed to fetch user messages: {}", err))),
+                    )
+                }
             }
         }
-        Err(err) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiResponse::error(format!("Failed to count user messages: {}", err))),
-        ),
+        Err(err) => {
+            eprintln!("❌ Error counting user messages: {}", err);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiResponse::error(format!("Failed to count user messages: {}", err))),
+            )
+        }
     }
+}
+
+// Health check endpoint
+pub async fn health_check() -> impl IntoResponse {
+    println!("❤️ Chat service health check");
+
+    let response = serde_json::json!({
+        "status": "ok",
+        "service": "chat",
+        "timestamp": Utc::now().to_rfc3339()
+    });
+
+    (StatusCode::OK, Json(ApiResponse::success(response)))
 }

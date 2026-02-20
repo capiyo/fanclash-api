@@ -861,7 +861,7 @@ pub async fn get_comments(
     let mut filter = doc! {};
 
     if let Some(fixture_id) = &query.fixture_id {
-        filter.insert("fixture_id", fixture_id);
+        filter.insert("fixtureId", fixture_id);
     }
 
     if let Some(voter_id) = &query.voter_id {

@@ -9,8 +9,9 @@ mod payment;
 pub(crate) mod pledges;
 pub(crate) mod transaction;
 pub(crate) mod user_profile;
-pub(crate) mod vote;
 pub(crate) mod posta;
-pub(crate) mod chat;
+pub(crate) mod chat;      // Now just a simple declaration
 pub(crate) mod archive;
 pub(crate) mod notification;
+pub(crate) mod vote;      // Now just a simple declaration
+pub(crate) mod comments;      // Now just a simple declaration
