@@ -1,9 +1,10 @@
 // src/models/vote.rs
 
 use bson::{oid::ObjectId, DateTime as BsonDateTime};
-use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
+use chrono::{DateTime, NaiveDateTime,NaiveDate, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 use validator::Validate;
+
 
 // Vote model for storing votes
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]
@@ -1028,31 +1029,33 @@ impl Like {
         }
 }
 
+
 // Helper function to create a Comment from CreateComment
 impl Comment {
     pub fn from_create_comment(create_comment: CreateComment) -> Result<Self, String> {
-           // Try to parse the timestamp, but if it fails, use current time and log warning
-           let comment_timestamp = match parse_iso_timestamp(&create_comment.timestamp) {
-               Ok(ts) => ts,
-               Err(e) => {
-                   println!("⚠️ Timestamp parsing failed: {}, using current time", e);
-                   BsonDateTime::from_millis(Utc::now().timestamp_millis())
-               }
-           };
+        // Try to parse the timestamp, but if it fails, use current time and log warning
+        let comment_timestamp = match parse_iso_timestamp(&create_comment.timestamp) {
+            Ok(ts) => ts,
+            Err(e) => {
+                println!("⚠️ Timestamp parsing failed: {}, using current time", e);
+                BsonDateTime::from_millis(Utc::now().timestamp_millis())
+            }
+        };
 
-           Ok(Comment {
-               id: None,
-               voter_id: create_comment.voter_id,
-               username: create_comment.username,
-               fixture_id: create_comment.fixture_id,
-               comment: create_comment.comment,
-               timestamp: create_comment.timestamp,
-               comment_timestamp,
-               created_at: Some(BsonDateTime::from_millis(Utc::now().timestamp_millis())),
-               likes: Some(0),
-               replies: Some(Vec::new()),
-           })
-       }
+        Ok(Comment {
+            id: None,
+            voter_id: create_comment.voter_id,
+            username: create_comment.username,
+            fixture_id: create_comment.fixture_id,
+            comment: create_comment.comment,
+            timestamp: create_comment.timestamp,
+            comment_timestamp,
+            created_at: Some(BsonDateTime::from_millis(Utc::now().timestamp_millis())),
+            likes: Some(0),
+            replies: Some(Vec::new()),
+        })
+    } // <-- This closing brace was missing for the function
+} // <-- This closes the impl Comment block
 
 // Helper for BsonDateTime serialization
 pub fn bson_datetime_to_iso_string(dt: &BsonDateTime) -> String {

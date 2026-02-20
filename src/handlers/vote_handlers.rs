@@ -500,25 +500,24 @@ pub async fn create_like(
     let collection: Collection<Like> = state.db.collection("likes");
     let existing_like_filter = doc! {
         "voterId": &payload.voter_id,
-        "fixtureId": &payload.fixture_id,  // Fixed: should be "fixtureId" not "fixture_id"
+        "fixtureId": &payload.fixture_id,
     };
 
     let existing_like = collection.find_one(existing_like_filter.clone()).await?;
     let total_likes: i64;
     let message: String;
     let success: bool;
-    let like_id: Option<String> = None;
+    let mut like_id: Option<String> = None;  // Made this mutable with 'mut'
 
-    if let Some(like) = existing_like {
+    if let Some(_like) = existing_like {  // Added underscore to fix warning
         if payload.action == "unlike" {
             collection.delete_one(existing_like_filter).await?;
-            let fixture_filter = doc! { "fixtureId": &payload.fixture_id };  // Fixed field name
+            let fixture_filter = doc! { "fixtureId": &payload.fixture_id };
             total_likes = collection.count_documents(fixture_filter).await? as i64;
             message = "Like removed successfully".to_string();
             success = true;
             println!("👎 Like removed for fixture: {} by {}", payload.fixture_id, payload.username);
         } else {
-            // Already liked and trying to like again
             return Ok(Json(LikeResponse {
                 success: false,
                 message: "User already liked this fixture".to_string(),
@@ -547,7 +546,7 @@ pub async fn create_like(
         };
 
         let insert_result = collection.insert_one(like).await?;
-        let fixture_filter = doc! { "fixtureId": &payload.fixture_id };  // Fixed field name
+        let fixture_filter = doc! { "fixtureId": &payload.fixture_id };
         total_likes = collection.count_documents(fixture_filter).await? as i64;
         message = "Like added successfully".to_string();
         success = true;
