@@ -1,5 +1,3 @@
-// src/handlers/vote_handlers.rs
-
 use axum::{
     extract::{Path, Query, State},
     response::Json,
@@ -14,7 +12,7 @@ use crate::services::fcm_service;
 
 use crate::{
     errors::{AppError, Result},
-    models::game::Game, // ADD THIS IMPORT - FIXES THE Game type error
+    models::game::Game,
     models::vote::{
         parse_iso_timestamp_or_now, validate_selection,
         BulkVoteRequest, BulkVoteResponse, Comment, CommentQuery,
@@ -22,10 +20,7 @@ use crate::{
         FixtureCountsResponse, FixtureStats, Like, LikeResponse, LikeStats, TotalCountsResponse,
         UserVoteStatus, Vote, VoteQuery, VoteResponse, VoteStats,
     },
-    //services::fcm_service::{self, FCMService},
-    //
     state::AppState,
-   // use crate::services::fcm_service;
 };
 
 // ========== VOTE HANDLERS ==========
@@ -485,10 +480,6 @@ pub async fn delete_vote(
 
 // ========== LIKE HANDLERS ==========
 
-// In create_like function, fix unused variables:
-
-// In src/handlers/vote_handlers.rs, around line 500-570
-
 pub async fn create_like(
     State(state): State<AppState>,
     Json(payload): Json<CreateLike>,
@@ -507,9 +498,9 @@ pub async fn create_like(
     let total_likes: i64;
     let message: String;
     let success: bool;
-    let mut like_id: Option<String> = None;  // Made this mutable with 'mut'
+    let mut like_id: Option<String> = None;
 
-    if let Some(_like) = existing_like {  // Added underscore to fix warning
+    if let Some(_like) = existing_like {
         if payload.action == "unlike" {
             collection.delete_one(existing_like_filter).await?;
             let fixture_filter = doc! { "fixtureId": &payload.fixture_id };
@@ -687,11 +678,7 @@ pub async fn delete_like(
     }))
 }
 
-// ========== COMMENT HANDLERS ==========
-
-// In create_comment function, fix the comment_id issue:
-
-// ========== COMMENT HANDLERS ==========
+// ========== COMMENT HANDLERS (UPDATED WITH SELECTION) ==========
 
 pub async fn create_comment(
     State(state): State<AppState>,
@@ -703,6 +690,16 @@ pub async fn create_comment(
     payload
         .validate()
         .map_err(|e| AppError::ValidationError(e.to_string()))?;
+
+    // Validate selection field is provided
+    if payload.selection.trim().is_empty() {
+        return Err(AppError::ValidationError(
+            "selection is required".to_string(),
+        ));
+    }
+
+    // Validate selection is valid
+    validate_selection(&payload.selection).map_err(|e| AppError::ValidationError(e))?;
 
     // Validate fixture_id is provided
     if payload.fixture_id.trim().is_empty() {
@@ -721,6 +718,7 @@ pub async fn create_comment(
         voter_id: payload.voter_id.clone(),
         username: payload.username.clone(),
         fixture_id: payload.fixture_id.clone(),
+        selection: payload.selection.clone(), // NEW: Store user's vote selection
         comment: payload.comment.clone(),
         timestamp: payload.timestamp.clone(),
         comment_timestamp,
@@ -829,9 +827,10 @@ pub async fn create_comment(
                     ),
                     serde_json::json!({
                         "fixture_id": payload_clone.fixture_id,
-                        "comment_id": comment_id_for_closure, // USE THE CLONED VALUE
+                        "comment_id": comment_id_for_closure,
                         "voter_id": payload_clone.voter_id,
                         "voter_username": payload_clone.username,
+                        "voter_selection": payload_clone.selection, // Include selection in notification
                         "comment": comment_text,
                         "home_team": home_team,
                         "away_team": away_team,
@@ -847,7 +846,7 @@ pub async fn create_comment(
     Ok(Json(CommentResponse {
         success: true,
         message: "Comment submitted successfully".to_string(),
-        comment_id: Some(comment_id), // USE THE ORIGINAL VALUE
+        comment_id: Some(comment_id),
         comment: Some(inserted_comment),
     }))
 }
@@ -867,6 +866,11 @@ pub async fn get_comments(
 
     if let Some(voter_id) = &query.voter_id {
         filter.insert("voterId", voter_id);
+    }
+
+    // NEW: Add selection filter if provided
+    if let Some(selection) = &query.selection {
+        filter.insert("selection", selection);
     }
 
     let _options = FindOptions::builder()
@@ -899,16 +903,25 @@ pub async fn get_fixture_comments(
 
     let total_comments = all_comments.len() as i64;
 
+    // NEW: Get comment counts by selection
+    let home_comments = all_comments.iter().filter(|c| c.selection == "home_team").count() as i64;
+    let draw_comments = all_comments.iter().filter(|c| c.selection == "draw").count() as i64;
+    let away_comments = all_comments.iter().filter(|c| c.selection == "away_team").count() as i64;
+
     // Get recent comments (already sorted by timestamp)
     let recent_comments: Vec<Comment> = all_comments.into_iter().take(10).collect();
 
     let stats = CommentStats {
         fixture_id: fixture_id.clone(),
         total_comments,
+        home_comments, // NEW
+        draw_comments, // NEW
+        away_comments, // NEW
         recent_comments,
     };
 
-    println!("✅ Found {} comments for fixture", total_comments);
+    println!("✅ Found {} comments for fixture (H:{} D:{} A:{})",
+        total_comments, home_comments, draw_comments, away_comments);
     Ok(Json(stats))
 }
 
@@ -1099,21 +1112,21 @@ pub async fn get_all_counts_for_fixture(
     let vote_filter = doc! { "fixture_id": &fixture_id };
     let total_votes = vote_collection.count_documents(vote_filter.clone()).await? as i64;
 
-    let _home_votes = vote_collection
+    let home_votes = vote_collection
         .count_documents(doc! {
             "fixture_id": &fixture_id,
             "selection": "home_team"
         })
         .await? as i64;
 
-    let _draw_votes = vote_collection
+    let draw_votes = vote_collection
         .count_documents(doc! {
             "fixture_id": &fixture_id,
             "selection": "draw"
         })
         .await? as i64;
 
-    let _away_votes = vote_collection
+    let away_votes = vote_collection
         .count_documents(doc! {
             "fixture_id": &fixture_id,
             "selection": "away_team"
@@ -1143,9 +1156,9 @@ pub async fn get_all_counts_for_fixture(
         home_team,
         away_team,
         total_votes,
-        home_votes: _home_votes,
-        draw_votes: _draw_votes,
-        away_votes: _away_votes,
+        home_votes,
+        draw_votes,
+        away_votes,
         total_likes,
         total_comments,
         total_engagement,
@@ -1255,21 +1268,21 @@ pub async fn get_batch_fixture_counts(
         let total_votes = vote_collection.count_documents(vote_filter.clone()).await? as i64;
 
         // Get vote breakdown
-        let _home_votes = vote_collection
+        let home_votes = vote_collection
             .count_documents(doc! {
                 "fixture_id": &fixture_id,
                 "selection": "home_team"
             })
             .await? as i64;
 
-        let _draw_votes = vote_collection
+        let draw_votes = vote_collection
             .count_documents(doc! {
                 "fixture_id": &fixture_id,
                 "selection": "draw"
             })
             .await? as i64;
 
-        let _away_votes = vote_collection
+        let away_votes = vote_collection
             .count_documents(doc! {
                 "fixture_id": &fixture_id,
                 "selection": "away_team"
@@ -1404,6 +1417,17 @@ pub async fn get_overview_stats(State(state): State<AppState>) -> Result<Json<se
         .count_documents(doc! { "selection": "away_team" })
         .await? as i64;
 
+    // Get comments by selection (NEW)
+    let home_comments = comment_collection
+        .count_documents(doc! { "selection": "home_team" })
+        .await? as i64;
+    let draw_comments = comment_collection
+        .count_documents(doc! { "selection": "draw" })
+        .await? as i64;
+    let away_comments = comment_collection
+        .count_documents(doc! { "selection": "away_team" })
+        .await? as i64;
+
     // Get today's votes
     let today_start = Utc::now().date_naive().and_hms_opt(0, 0, 0).unwrap();
     let today_end = Utc::now().date_naive().and_hms_opt(23, 59, 59).unwrap();
@@ -1432,6 +1456,11 @@ pub async fn get_overview_stats(State(state): State<AppState>) -> Result<Json<se
                 "home_team": home_votes,
                 "draw": draw_votes,
                 "away_team": away_votes
+            },
+            "comment_distribution": { // NEW
+                "home_team": home_comments,
+                "draw": draw_comments,
+                "away_team": away_comments
             },
             "today": {
                 "votes": today_votes
@@ -1512,16 +1541,14 @@ pub async fn get_combined_stats_for_multiple_fixtures(
         // Get like stats
         let like_stats = get_like_stats(State(state.clone()), Path(fixture_id.clone())).await?;
 
-        // Get comment count
-        let comment_collection: Collection<Comment> = state.db.collection("comments");
-        let comment_filter = doc! { "fixture_id": &fixture_id };
-        let comment_count = comment_collection.count_documents(comment_filter).await? as i64;
+        // Get comment stats (now includes selection breakdown)
+        let comment_stats = get_comment_stats(State(state.clone()), Path(fixture_id.clone())).await?;
 
         let stats = json!({
             "fixture_id": fixture_id,
             "vote_stats": vote_stats.0,
             "like_stats": like_stats.0,
-            "comment_count": comment_count,
+            "comment_stats": comment_stats.0, // Includes home/draw/away comment counts
         });
 
         result.push(stats);
@@ -1580,12 +1607,29 @@ pub async fn get_realtime_vote_updates(
         })
         .await? as i64;
 
-    // Get comment count
-    let comment_count = comment_collection
+    // Get comment count and breakdown by selection (NEW)
+    let home_comments = comment_collection
         .count_documents(doc! {
-            "fixture_id": &fixture_id
+            "fixture_id": &fixture_id,
+            "selection": "home_team"
         })
         .await? as i64;
+
+    let draw_comments = comment_collection
+        .count_documents(doc! {
+            "fixture_id": &fixture_id,
+            "selection": "draw"
+        })
+        .await? as i64;
+
+    let away_comments = comment_collection
+        .count_documents(doc! {
+            "fixture_id": &fixture_id,
+            "selection": "away_team"
+        })
+        .await? as i64;
+
+    let comment_count = home_comments + draw_comments + away_comments;
 
     let response = json!({
         "success": true,
@@ -1598,8 +1642,15 @@ pub async fn get_realtime_vote_updates(
                 "total": home_votes + draw_votes + away_votes
             },
             "likes": like_count,
-            "comments": comment_count,
-            "total_engagement": home_votes + draw_votes + away_votes + like_count + comment_count,
+            "comments": {
+                "total": comment_count,
+                "by_selection": { // NEW
+                    "home_team": home_comments,
+                    "draw": draw_comments,
+                    "away_team": away_comments
+                }
+            },
+            "total_engagement": (home_votes + draw_votes + away_votes) + like_count + comment_count,
             "last_updated": Utc::now().to_rfc3339()
         }
     });
@@ -1661,6 +1712,59 @@ pub async fn get_vote_counts_by_selection(
     Ok(Json(response))
 }
 
+pub async fn get_comment_counts_by_selection(
+    State(state): State<AppState>,
+    Path(fixture_id): Path<String>,
+) -> Result<Json<serde_json::Value>> {
+    println!("📊 Getting comment counts by selection for fixture: {}", fixture_id);
+
+    let collection: Collection<Comment> = state.db.collection("comments");
+
+    let home_comments = collection
+        .count_documents(doc! {
+            "fixture_id": &fixture_id,
+            "selection": "home_team"
+        })
+        .await? as i64;
+
+    let draw_comments = collection
+        .count_documents(doc! {
+            "fixture_id": &fixture_id,
+            "selection": "draw"
+        })
+        .await? as i64;
+
+    let away_comments = collection
+        .count_documents(doc! {
+            "fixture_id": &fixture_id,
+            "selection": "away_team"
+        })
+        .await? as i64;
+
+    let total_comments = home_comments + draw_comments + away_comments;
+
+    let response = json!({
+        "success": true,
+        "fixture_id": fixture_id,
+        "comment_counts": {
+            "home_team": home_comments,
+            "draw": draw_comments,
+            "away_team": away_comments,
+            "total": total_comments
+        },
+        "percentages": {
+            "home": if total_comments > 0 { (home_comments as f64 / total_comments as f64) * 100.0 } else { 0.0 },
+            "draw": if total_comments > 0 { (draw_comments as f64 / total_comments as f64) * 100.0 } else { 0.0 },
+            "away": if total_comments > 0 { (away_comments as f64 / total_comments as f64) * 100.0 } else { 0.0 }
+        },
+        "timestamp": Utc::now().to_rfc3339()
+    });
+
+    println!("✅ Comment counts by selection for fixture {}: H:{} D:{} A:{}",
+        fixture_id, home_comments, draw_comments, away_comments);
+    Ok(Json(response))
+}
+
 pub async fn get_fixture_engagement_summary(
     State(state): State<AppState>,
     Path(fixture_id): Path<String>,
@@ -1677,6 +1781,49 @@ pub async fn get_fixture_engagement_summary(
     let total_likes = like_collection.count_documents(vote_filter.clone()).await? as i64;
     let total_comments = comment_collection.count_documents(vote_filter.clone()).await? as i64;
     let total_engagement = total_votes + total_likes + total_comments;
+
+    // Get breakdown by selection for votes and comments
+    let home_votes = vote_collection
+        .count_documents(doc! {
+            "fixture_id": &fixture_id,
+            "selection": "home_team"
+        })
+        .await? as i64;
+
+    let draw_votes = vote_collection
+        .count_documents(doc! {
+            "fixture_id": &fixture_id,
+            "selection": "draw"
+        })
+        .await? as i64;
+
+    let away_votes = vote_collection
+        .count_documents(doc! {
+            "fixture_id": &fixture_id,
+            "selection": "away_team"
+        })
+        .await? as i64;
+
+    let home_comments = comment_collection
+        .count_documents(doc! {
+            "fixture_id": &fixture_id,
+            "selection": "home_team"
+        })
+        .await? as i64;
+
+    let draw_comments = comment_collection
+        .count_documents(doc! {
+            "fixture_id": &fixture_id,
+            "selection": "draw"
+        })
+        .await? as i64;
+
+    let away_comments = comment_collection
+        .count_documents(doc! {
+            "fixture_id": &fixture_id,
+            "selection": "away_team"
+        })
+        .await? as i64;
 
     // Get fixture details
     let first_vote = vote_collection.find_one(vote_filter).await?;
@@ -1697,9 +1844,23 @@ pub async fn get_fixture_engagement_summary(
         "home_team": home_team,
         "away_team": away_team,
         "engagement_metrics": {
-            "votes": total_votes,
+            "votes": {
+                "total": total_votes,
+                "by_selection": {
+                    "home_team": home_votes,
+                    "draw": draw_votes,
+                    "away_team": away_votes
+                }
+            },
             "likes": total_likes,
-            "comments": total_comments,
+            "comments": {
+                "total": total_comments,
+                "by_selection": {
+                    "home_team": home_comments,
+                    "draw": draw_comments,
+                    "away_team": away_comments
+                }
+            },
             "total_engagement": total_engagement,
             "engagement_score": engagement_score
         },

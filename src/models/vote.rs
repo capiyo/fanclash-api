@@ -1,10 +1,9 @@
-// src/models/vote.rs
-
 use bson::{oid::ObjectId, DateTime as BsonDateTime};
-use chrono::{DateTime, NaiveDateTime,NaiveDate, TimeZone, Utc};
+use chrono::{DateTime, NaiveDateTime, NaiveDate, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 use validator::Validate;
 
+// ========== VOTE MODELS ==========
 
 // Vote model for storing votes
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]
@@ -46,7 +45,7 @@ pub struct Vote {
 }
 
 // For creating new votes (from Flutter app)
-#[derive(Debug, Clone, Serialize, Deserialize, Validate)]  // Added Clone
+#[derive(Debug, Clone, Serialize, Deserialize, Validate)]
 pub struct CreateVote {
     #[serde(rename = "voterId")]
     #[validate(length(min = 1, message = "Voter ID is required"))]
@@ -76,6 +75,8 @@ pub struct CreateVote {
     #[validate(length(min = 1, message = "Selection is required"))]
     pub selection: String,
 }
+
+// ========== LIKE MODELS ==========
 
 // Like model for storing likes
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]
@@ -107,7 +108,7 @@ pub struct Like {
 }
 
 // For creating new likes (from Flutter app)
-#[derive(Debug, Clone, Serialize, Deserialize, Validate)]  // Added Clone
+#[derive(Debug, Clone, Serialize, Deserialize, Validate)]
 pub struct CreateLike {
     #[serde(rename = "voterId")]
     #[validate(length(min = 1, message = "Voter ID is required"))]
@@ -126,6 +127,8 @@ pub struct CreateLike {
     pub action: String,
 }
 
+// ========== COMMENT MODELS (UPDATED WITH SELECTION) ==========
+
 // Comment model for storing comments
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]
 pub struct Comment {
@@ -143,6 +146,11 @@ pub struct Comment {
     #[serde(rename = "fixtureId")]
     #[validate(length(min = 1, message = "Fixture ID is required"))]
     pub fixture_id: String,
+
+    // NEW FIELD: User's vote selection when they commented
+    #[serde(rename = "selection")]
+    #[validate(length(min = 1, message = "Selection is required"))]
+    pub selection: String, // "home_team", "draw", or "away_team"
 
     #[serde(rename = "comment")]
     #[validate(length(
@@ -168,8 +176,8 @@ pub struct Comment {
     pub replies: Option<Vec<ObjectId>>,
 }
 
-// For creating new comments (from Flutter app)
-#[derive(Debug, Clone, Serialize, Deserialize, Validate)]  // Added Clone
+// For creating new comments (from Flutter app) - UPDATED WITH SELECTION
+#[derive(Debug, Clone, Serialize, Deserialize, Validate)]
 pub struct CreateComment {
     #[serde(rename = "voterId")]
     #[validate(length(min = 1, message = "Voter ID is required"))]
@@ -183,6 +191,11 @@ pub struct CreateComment {
     #[validate(length(min = 1, message = "Fixture ID is required"))]
     pub fixture_id: String,
 
+    // NEW FIELD: User's vote selection when they commented
+    #[serde(rename = "selection")]
+    #[validate(length(min = 1, message = "Selection is required"))]
+    pub selection: String, // "home_team", "draw", or "away_team"
+
     #[serde(rename = "comment")]
     #[validate(length(
         min = 1,
@@ -195,6 +208,8 @@ pub struct CreateComment {
     #[validate(length(min = 1, message = "Timestamp is required"))]
     pub timestamp: String,
 }
+
+// ========== STATISTICS MODELS (UPDATED) ==========
 
 // Vote statistics response
 #[derive(Debug, Serialize, Deserialize)]
@@ -243,7 +258,7 @@ pub struct LikeStats {
     pub user_has_liked: bool,
 }
 
-// Comment statistics response
+// Comment statistics response - UPDATED WITH SELECTION FIELDS
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CommentStats {
     #[serde(rename = "fixtureId")]
@@ -252,8 +267,59 @@ pub struct CommentStats {
     #[serde(rename = "totalComments")]
     pub total_comments: i64,
 
+    // NEW: Comment counts by selection
+    #[serde(rename = "homeComments")]
+    pub home_comments: i64,
+
+    #[serde(rename = "drawComments")]
+    pub draw_comments: i64,
+
+    #[serde(rename = "awayComments")]
+    pub away_comments: i64,
+
     #[serde(rename = "recentComments")]
     pub recent_comments: Vec<Comment>,
+}
+
+// Comment with user info (for responses) - UPDATED WITH SELECTION
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CommentWithUser {
+    #[serde(rename = "_id", skip_serializing_if = "Option::is_none")]
+    pub id: Option<ObjectId>,
+
+    #[serde(rename = "voterId")]
+    pub voter_id: String,
+
+    #[serde(rename = "username")]
+    pub username: String,
+
+    #[serde(rename = "fixtureId")]
+    pub fixture_id: String,
+
+    // NEW FIELD: User's vote selection
+    #[serde(rename = "selection")]
+    pub selection: String,
+
+    pub comment: String,
+    pub timestamp: String,
+
+    #[serde(rename = "commentTimestamp")]
+    pub comment_timestamp: BsonDateTime,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub likes: Option<i32>,
+
+    #[serde(rename = "replies", skip_serializing_if = "Option::is_none")]
+    pub replies: Option<Vec<ObjectId>>,
+
+    #[serde(rename = "userDisplayName", skip_serializing_if = "Option::is_none")]
+    pub user_display_name: Option<String>,
+
+    #[serde(rename = "userAvatar", skip_serializing_if = "Option::is_none")]
+    pub user_avatar: Option<String>,
+
+    #[serde(rename = "isVerified")]
+    pub is_verified: bool,
 }
 
 // User vote status
@@ -294,10 +360,11 @@ pub struct FixtureStats {
     pub like_stats: LikeStats,
 
     #[serde(rename = "commentStats")]
-    pub comment_stats: CommentStats,
+    pub comment_stats: CommentStats, // Now includes selection breakdown
 }
 
-// API response wrappers
+// ========== API RESPONSE WRAPPERS ==========
+
 #[derive(Debug, Serialize)]
 pub struct VoteResponse {
     pub success: bool,
@@ -340,7 +407,8 @@ pub struct StatsResponse {
     pub data: FixtureStats,
 }
 
-// Query parameters
+// ========== QUERY PARAMETERS (UPDATED) ==========
+
 #[derive(Debug, Deserialize)]
 pub struct VoteQuery {
     #[serde(rename = "fixtureId")]
@@ -359,6 +427,11 @@ pub struct CommentQuery {
 
     #[serde(rename = "voterId")]
     pub voter_id: Option<String>,
+
+    // NEW: Filter by vote selection
+    #[serde(rename = "selection")]
+    pub selection: Option<String>,
+
     pub limit: Option<i64>,
     pub skip: Option<u64>,
 
@@ -366,7 +439,8 @@ pub struct CommentQuery {
     pub sort_by: Option<String>, // "newest", "oldest", "most_liked"
 }
 
-// Bulk operations
+// ========== BULK OPERATIONS ==========
+
 #[derive(Debug, Deserialize)]
 pub struct BulkVoteRequest {
     pub votes: Vec<CreateVote>,
@@ -395,6 +469,8 @@ pub struct FailedVote {
     pub vote_data: CreateVote,
 }
 
+// ========== VALIDATION HELPER ==========
+
 // Validation for selection field
 pub fn validate_selection(selection: &str) -> Result<(), String> {
     let valid_selections = vec!["home_team", "draw", "away_team"];
@@ -404,8 +480,9 @@ pub fn validate_selection(selection: &str) -> Result<(), String> {
     Ok(())
 }
 
-// Helper function for timestamp parsing - FIXED
-// Helper function for timestamp parsing - FIXED VERSION
+// ========== TIMESTAMP PARSING ==========
+
+// Helper function for timestamp parsing
 pub fn parse_iso_timestamp(timestamp_str: &str) -> Result<BsonDateTime, String> {
     // Log the timestamp we're trying to parse for debugging
     println!("🔍 Parsing timestamp: '{}'", timestamp_str);
@@ -505,6 +582,104 @@ pub fn parse_iso_timestamp_or_now(timestamp_str: &str) -> BsonDateTime {
         BsonDateTime::from_millis(Utc::now().timestamp_millis())
     })
 }
+
+// ========== FROM CREATE IMPLEMENTATIONS (UPDATED) ==========
+
+// Helper function to create a Vote from CreateVote
+impl Vote {
+    pub fn from_create_vote(create_vote: CreateVote) -> Self {
+        Vote {
+            id: None,
+            voter_id: create_vote.voter_id,
+            username: create_vote.username,
+            fixture_id: create_vote.fixture_id,
+            home_team: create_vote.home_team,
+            away_team: create_vote.away_team,
+            draw: create_vote.draw,
+            selection: create_vote.selection,
+            vote_timestamp: BsonDateTime::from_millis(Utc::now().timestamp_millis()),
+            created_at: Some(BsonDateTime::from_millis(Utc::now().timestamp_millis())),
+        }
+    }
+}
+
+// Helper function to create a Like from CreateLike
+impl Like {
+    pub fn from_create_like(create_like: CreateLike) -> Self {
+        // Use current time instead of trying to parse a timestamp
+        // Since the Flutter app doesn't send a timestamp for likes
+        let current_time = BsonDateTime::from_millis(Utc::now().timestamp_millis());
+
+        println!("📝 Creating like for fixture: {}, user: {}, action: {}",
+                 create_like.fixture_id, create_like.voter_id, create_like.action);
+
+        Like {
+            id: None,
+            voter_id: create_like.voter_id,
+            username: create_like.username,
+            fixture_id: create_like.fixture_id,
+            action: create_like.action,
+            like_timestamp: current_time,
+            created_at: Some(current_time),
+        }
+    }
+}
+
+// Helper function to create a Comment from CreateComment - UPDATED WITH SELECTION
+impl Comment {
+    pub fn from_create_comment(create_comment: CreateComment) -> Result<Self, String> {
+        // Validate selection
+        let valid_selections = vec!["home_team", "draw", "away_team"];
+        if !valid_selections.contains(&create_comment.selection.as_str()) {
+            return Err(format!(
+                "Invalid selection: {}. Must be one of: home_team, draw, away_team",
+                create_comment.selection
+            ));
+        }
+
+        // Try to parse the timestamp, but if it fails, use current time and log warning
+        let comment_timestamp = match parse_iso_timestamp(&create_comment.timestamp) {
+            Ok(ts) => ts,
+            Err(e) => {
+                println!("⚠️ Timestamp parsing failed: {}, using current time", e);
+                BsonDateTime::from_millis(Utc::now().timestamp_millis())
+            }
+        };
+
+        Ok(Comment {
+            id: None,
+            voter_id: create_comment.voter_id,
+            username: create_comment.username,
+            fixture_id: create_comment.fixture_id,
+            selection: create_comment.selection, // NEW: Store the user's vote
+            comment: create_comment.comment,
+            timestamp: create_comment.timestamp,
+            comment_timestamp,
+            created_at: Some(BsonDateTime::from_millis(Utc::now().timestamp_millis())),
+            likes: Some(0),
+            replies: Some(Vec::new()),
+        })
+    }
+}
+
+// ========== SERIALIZATION HELPERS ==========
+
+// Helper for BsonDateTime serialization
+pub fn bson_datetime_to_iso_string(dt: &BsonDateTime) -> String {
+    let millis = dt.timestamp_millis();
+    let dt_chrono = Utc
+        .timestamp_millis_opt(millis)
+        .single()
+        .unwrap_or_else(|| Utc::now());
+    dt_chrono.to_rfc3339()
+}
+
+// Helper for optional BsonDateTime serialization
+pub fn option_bson_datetime_to_iso_string(dt: &Option<BsonDateTime>) -> Option<String> {
+    dt.as_ref().map(bson_datetime_to_iso_string)
+}
+
+// ========== RESPONSE WRAPPERS ==========
 
 // For responses that need to be compatible with existing Game API
 #[derive(Debug, Serialize)]
@@ -748,9 +923,7 @@ pub struct DetailedFixtureStatsResponse {
     pub data: DetailedFixtureStats,
 }
 
-// ========== END OF TOTAL COUNTS MODELS ==========
-
-// Additional models for enhanced functionality
+// ========== ADDITIONAL MODELS ==========
 
 // User activity summary
 #[derive(Debug, Serialize, Deserialize)]
@@ -836,39 +1009,6 @@ pub struct VoteUpdate {
 
     #[serde(rename = "updateTimestamp")]
     pub update_timestamp: BsonDateTime,
-}
-
-// Comment with user info (for responses)
-#[derive(Debug, Serialize, Deserialize)]
-pub struct CommentWithUser {
-    #[serde(rename = "_id", skip_serializing_if = "Option::is_none")]
-    pub id: Option<ObjectId>,
-
-    #[serde(rename = "voterId")]
-    pub voter_id: String,
-
-    #[serde(rename = "username")]
-    pub username: String,
-
-    #[serde(rename = "fixtureId")]
-    pub fixture_id: String,
-    pub comment: String,
-    pub timestamp: String,
-
-    #[serde(rename = "commentTimestamp")]
-    pub comment_timestamp: BsonDateTime,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub likes: Option<i32>,
-
-    #[serde(rename = "userDisplayName", skip_serializing_if = "Option::is_none")]
-    pub user_display_name: Option<String>,
-
-    #[serde(rename = "userAvatar", skip_serializing_if = "Option::is_none")]
-    pub user_avatar: Option<String>,
-
-    #[serde(rename = "isVerified")]
-    pub is_verified: bool,
 }
 
 // Like with user info
@@ -989,90 +1129,8 @@ pub struct UserVoteEntry {
     pub was_correct: Option<bool>,
 }
 
-// Helper function to create a Vote from CreateVote
-impl Vote {
-    pub fn from_create_vote(create_vote: CreateVote) -> Self {
-        Vote {
-            id: None,
-            voter_id: create_vote.voter_id,
-            username: create_vote.username,
-            fixture_id: create_vote.fixture_id,
-            home_team: create_vote.home_team,
-            away_team: create_vote.away_team,
-            draw: create_vote.draw,
-            selection: create_vote.selection,
-            vote_timestamp: BsonDateTime::from_millis(Utc::now().timestamp_millis()),
-            created_at: Some(BsonDateTime::from_millis(Utc::now().timestamp_millis())),
-        }
-    }
-}
+// ========== DEFAULT IMPLEMENTATIONS ==========
 
-// Helper function to create a Like from CreateLike
-impl Like {
-    pub fn from_create_like(create_like: CreateLike) -> Self {
-            // Use current time instead of trying to parse a timestamp
-            // Since the Flutter app doesn't send a timestamp for likes
-            let current_time = BsonDateTime::from_millis(Utc::now().timestamp_millis());
-
-            println!("📝 Creating like for fixture: {}, user: {}, action: {}",
-                     create_like.fixture_id, create_like.voter_id, create_like.action);
-
-            Like {
-                id: None,
-                voter_id: create_like.voter_id,
-                username: create_like.username,
-                fixture_id: create_like.fixture_id,
-                action: create_like.action,
-                like_timestamp: current_time, // Use current time
-                created_at: Some(current_time),
-            }
-        }
-}
-
-
-// Helper function to create a Comment from CreateComment
-impl Comment {
-    pub fn from_create_comment(create_comment: CreateComment) -> Result<Self, String> {
-        // Try to parse the timestamp, but if it fails, use current time and log warning
-        let comment_timestamp = match parse_iso_timestamp(&create_comment.timestamp) {
-            Ok(ts) => ts,
-            Err(e) => {
-                println!("⚠️ Timestamp parsing failed: {}, using current time", e);
-                BsonDateTime::from_millis(Utc::now().timestamp_millis())
-            }
-        };
-
-        Ok(Comment {
-            id: None,
-            voter_id: create_comment.voter_id,
-            username: create_comment.username,
-            fixture_id: create_comment.fixture_id,
-            comment: create_comment.comment,
-            timestamp: create_comment.timestamp,
-            comment_timestamp,
-            created_at: Some(BsonDateTime::from_millis(Utc::now().timestamp_millis())),
-            likes: Some(0),
-            replies: Some(Vec::new()),
-        })
-    } // <-- This closing brace was missing for the function
-} // <-- This closes the impl Comment block
-
-// Helper for BsonDateTime serialization
-pub fn bson_datetime_to_iso_string(dt: &BsonDateTime) -> String {
-    let millis = dt.timestamp_millis();
-    let dt_chrono = Utc
-        .timestamp_millis_opt(millis)
-        .single()
-        .unwrap_or_else(|| Utc::now());
-    dt_chrono.to_rfc3339()
-}
-
-// Helper for optional BsonDateTime serialization
-pub fn option_bson_datetime_to_iso_string(dt: &Option<BsonDateTime>) -> Option<String> {
-    dt.as_ref().map(bson_datetime_to_iso_string)
-}
-
-// Implement default for common responses
 impl Default for VoteResponse {
     fn default() -> Self {
         Self {
