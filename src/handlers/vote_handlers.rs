@@ -778,7 +778,7 @@ pub async fn create_comment(
             }
 
             // Get other commenters
-            let comment_collection: Collection<Comment> = state_clone.db.collection("comments");
+            let comment_collection: Collection<Comment> = state_clone.db.collection("room");
             let comment_filter = doc! {
                 "fixture_id": &payload_clone.fixture_id,
                 "voterId": { "$ne": &payload_clone.voter_id }
