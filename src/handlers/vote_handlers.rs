@@ -548,6 +548,101 @@ pub async fn create_like(
         }
 
         println!("✅ Like created for fixture: {} by {}", payload.fixture_id, payload.username);
+
+        // ===== ADD LIKE NOTIFICATIONS HERE =====
+        let state_clone = state.clone();
+        let payload_clone = payload.clone();
+
+        tokio::spawn(async move {
+            // Initialize FCM service
+            if let Ok(fcm_service) = crate::services::fcm_service::init_fcm_service().await {
+
+                // Get fixture details from games collection
+                let games_collection: Collection<Game> = state_clone.db.collection("games");
+                let game_filter = doc! { "fixtureId": &payload_clone.fixture_id };
+
+                let (home_team, away_team) = match games_collection.find_one(game_filter).await {
+                    Ok(Some(game)) => (game.home_team.clone(), game.away_team.clone()),
+                    _ => ("Unknown".to_string(), "Unknown".to_string()),
+                };
+
+                let fixture_name = format!("{} vs {}", home_team, away_team);
+
+                // Get all users who have interacted with this fixture
+                let mut user_ids = Vec::new();
+
+                // Get voters
+                let vote_collection: Collection<Vote> = state_clone.db.collection("votes");
+                let vote_filter = doc! { "fixture_id": &payload_clone.fixture_id };
+                if let Ok(cursor) = vote_collection.find(vote_filter).await {
+                    let votes: Vec<Vote> = cursor.try_collect().await.unwrap_or_default();
+                    for vote in votes {
+                        if vote.voter_id != payload_clone.voter_id {
+                            user_ids.push(vote.voter_id);
+                        }
+                    }
+                }
+
+                // Get commenters
+                let comment_collection: Collection<Comment> = state_clone.db.collection("room");
+                let comment_filter = doc! { "fixture_id": &payload_clone.fixture_id };
+                if let Ok(cursor) = comment_collection.find(comment_filter).await {
+                    let comments: Vec<Comment> = cursor.try_collect().await.unwrap_or_default();
+                    for comment in comments {
+                        if comment.voter_id != payload_clone.voter_id {
+                            user_ids.push(comment.voter_id);
+                        }
+                    }
+                }
+
+                // Get other users who liked this fixture
+                let like_collection: Collection<Like> = state_clone.db.collection("likes");
+                let other_likes_filter = doc! {
+                    "fixture_id": &payload_clone.fixture_id,
+                    "voterId": { "$ne": &payload_clone.voter_id }
+                };
+                if let Ok(cursor) = like_collection.find(other_likes_filter).await {
+                    let likes: Vec<Like> = cursor.try_collect().await.unwrap_or_default();
+                    for like in likes {
+                        user_ids.push(like.voter_id);
+                    }
+                }
+
+                // Remove duplicates
+                user_ids.sort();
+                user_ids.dedup();
+
+                if !user_ids.is_empty() {
+                    println!("📱 Notifying {} users about new like", user_ids.len());
+
+                    // Get current like count
+                    let like_count = user_ids.len() as i64 + 1; // +1 for current user
+
+                    let _ = fcm_service.send_to_multiple_users(
+                        &state_clone,
+                        user_ids,
+                        "❤️ Someone liked this match",
+                        &format!("@{} liked {} ({} likes total)",
+                            payload_clone.username,
+                            fixture_name,
+                            like_count
+                        ),
+                        serde_json::json!({
+                            "fixture_id": payload_clone.fixture_id,
+                            "liker_id": payload_clone.voter_id,
+                            "liker_username": payload_clone.username,
+                            "like_count": like_count,
+                            "home_team": home_team,
+                            "away_team": away_team,
+                            "type": "like_notification",
+                            "action": "new_like"
+                        }),
+                        "like_notification"
+                    ).await;
+                }
+            }
+        });
+        // ===== END LIKE NOTIFICATIONS =====
     }
 
     // Return the response
