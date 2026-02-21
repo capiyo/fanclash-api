@@ -708,7 +708,7 @@ pub async fn create_comment(
         ));
     }
 
-    let collection: Collection<Comment> = state.db.collection("comments");
+    let collection: Collection<Comment> = state.db.collection("room");
 
     // Parse the timestamp from Flutter using helper function
     let comment_timestamp = parse_iso_timestamp_or_now(&payload.timestamp);
@@ -857,7 +857,7 @@ pub async fn get_comments(
 ) -> Result<Json<Vec<Comment>>> {
     println!("🔍 Getting comments...");
 
-    let collection: Collection<Comment> = state.db.collection("comments");
+    let collection: Collection<Comment> = state.db.collection("room");
     let mut filter = doc! {};
 
     if let Some(fixture_id) = &query.fixture_id {
@@ -890,7 +890,7 @@ pub async fn get_fixture_comments(
 ) -> Result<Json<CommentStats>> {
     println!("💬 Getting comments for fixture: {}", fixture_id);
 
-    let collection: Collection<Comment> = state.db.collection("comments");
+    let collection: Collection<Comment> = state.db.collection("room");
     let filter = doc! { "fixture_id": &fixture_id };
 
     let _options = FindOptions::builder()
@@ -931,7 +931,7 @@ pub async fn get_total_comments_for_fixture(
 ) -> Result<Json<serde_json::Value>> {
     println!("💬 Getting total comment count for fixture: {}", fixture_id);
 
-    let collection: Collection<Comment> = state.db.collection("comments");
+    let collection: Collection<Comment> = state.db.collection("room");
     let filter = doc! { "fixture_id": &fixture_id };
 
     let total_comments = collection.count_documents(filter).await? as i64;
@@ -953,7 +953,7 @@ pub async fn get_user_comments(
 ) -> Result<Json<Vec<Comment>>> {
     println!("🔍 Getting comments for user: {}", voter_id);
 
-    let collection: Collection<Comment> = state.db.collection("comments");
+    let collection: Collection<Comment> = state.db.collection("room");
     let filter = doc! { "voterId": voter_id };
 
     let _options = FindOptions::builder()
@@ -973,7 +973,7 @@ pub async fn delete_comment(
 ) -> Result<Json<CommentResponse>> {
     println!("🗑️ Deleting comment: {}", comment_id);
 
-    let collection: Collection<Comment> = state.db.collection("comments");
+    let collection: Collection<Comment> = state.db.collection("room");
 
     let object_id = ObjectId::parse_str(&comment_id)
         .map_err(|_| AppError::invalid_data("Invalid comment ID format"))?;
@@ -1006,7 +1006,7 @@ pub async fn like_comment(
 ) -> Result<Json<CommentResponse>> {
     println!("👍 Liking comment: {}", comment_id);
 
-    let collection: Collection<Comment> = state.db.collection("comments");
+    let collection: Collection<Comment> = state.db.collection("room");
 
     let object_id = ObjectId::parse_str(&comment_id)
         .map_err(|_| AppError::invalid_data("Invalid comment ID format"))?;
@@ -1489,7 +1489,7 @@ pub async fn get_comment_counts_for_multiple_fixtures(
         fixture_ids.len()
     );
 
-    let collection: Collection<Comment> = state.db.collection("comments");
+    let collection: Collection<Comment> = state.db.collection("room");
 
     let mut result = serde_json::Map::new();
 
@@ -1718,7 +1718,7 @@ pub async fn get_comment_counts_by_selection(
 ) -> Result<Json<serde_json::Value>> {
     println!("📊 Getting comment counts by selection for fixture: {}", fixture_id);
 
-    let collection: Collection<Comment> = state.db.collection("comments");
+    let collection: Collection<Comment> = state.db.collection("room");
 
     let home_comments = collection
         .count_documents(doc! {
