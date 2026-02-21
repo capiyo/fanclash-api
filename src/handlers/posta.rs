@@ -482,17 +482,16 @@ pub async fn migrate_posts(
     let mut updated_count = 0;
     let mut skipped_count = 0;
 
-    for mut post in posts {
-        // Determine post type from content
+    for post in posts {
         let post_type_str = match (post.caption.is_some(), post.image_url.is_some()) {
             (true, true) => "TextAndImage",
             (true, false) => "Text",
             (false, true) => "Image",
-            (false, false) => "Text", // default
+            (false, false) => "Text",
         };
 
-        // Convert string to PostType enum
-        let post_type = match post_type_str {
+        // Remove the unused variable or prefix with underscore
+        let _post_type = match post_type_str {
             "Text" => PostType::Text,
             "Image" => PostType::Image,
             "TextAndImage" => PostType::TextAndImage,
@@ -1035,8 +1034,42 @@ pub async fn like_post(
         return Err(AppError::PostNotFound);
     }
 
+    // In the like_post handler, around line 1020-1060
     match collection.find_one(doc! { "_id": object_id }).await? {
         Some(updated_post) => {
+            // ========== SEND FCM NOTIFICATION TO POST OWNER ==========
+            // Don't notify if liking own post
+            if updated_post.user_id != payload.user_id {
+                let state_clone = state.clone();  // ← ADD THIS LINE
+                let post_owner_id = updated_post.user_id.clone();
+                let liker_name = payload.user_name.clone();
+                let post_id_clone = post_id.clone();
+                let likes_count = updated_post.likes_count;
+
+                tokio::spawn(async move {
+                    log_info!("📱 Sending push notification to post owner: {}", post_owner_id);
+
+                    if let Ok(fcm_service) = crate::services::fcm_service::init_fcm_service().await {
+                        let _ = fcm_service.send_to_user(
+                            &state_clone,  // Now state_clone is defined
+                            &post_owner_id,
+                            &format!("❤️ {} liked your post", liker_name),
+                            &format!("Now {} people like this post", likes_count),
+                            serde_json::json!({
+                                "post_id": post_id_clone,
+                                "liker_id": payload.user_id,
+                                "liker_name": liker_name,
+                                "likes_count": likes_count,
+                                "type": "post_like",
+                                "timestamp": Utc::now().to_rfc3339(),
+                            }),
+                            "post_like"
+                        ).await;
+                    }
+                });
+            }
+            // ========== END FCM NOTIFICATION ==========
+
             let post_response = PostResponse::from(updated_post);
             Ok(Json(json!({
                 "success": true,
@@ -1048,6 +1081,64 @@ pub async fn like_post(
     }
 }
 
+pub async fn unlike_comment(
+    State(state): State<AppState>,
+    Path(comment_id): Path<String>,
+    Json(payload): Json<LikeRequest>,
+) -> Result<Json<serde_json::Value>> {
+    let request_id = uuid::Uuid::new_v4();
+    log_info!("[{}] Starting unlike_comment handler. Comment ID: {}, User ID: {}",
+        request_id, comment_id, payload.user_id);
+
+    let collection: Collection<Comment> = state.db.collection("comments");
+
+    let object_id = match ObjectId::parse_str(&comment_id) {
+        Ok(oid) => oid,
+        Err(_) => return Err(AppError::invalid_data("Invalid comment ID")),
+    };
+
+    let comment = match collection.find_one(doc! { "_id": object_id }).await? {
+        Some(comment) => comment,
+        None => return Err(AppError::invalid_data("Comment not found")),
+    };
+
+    if !comment.liked_by.contains(&payload.user_id) {
+        let comment_response = CommentResponse::from(comment);
+        return Ok(Json(json!({
+            "success": true,
+            "message": "Comment not liked by user",
+            "comment": comment_response
+        })));
+    }
+
+    let filter = doc! { "_id": object_id };
+    let update = doc! {
+        "$inc": { "likes_count": -1 },
+        "$pull": { "liked_by": &payload.user_id },
+        "$set": {
+            "updated_at": Utc::now(),
+            "last_modified": Utc::now()
+        }
+    };
+
+    let result = collection.update_one(filter, update).await?;
+
+    if result.matched_count == 0 {
+        return Err(AppError::invalid_data("Comment not found"));
+    }
+
+    match collection.find_one(doc! { "_id": object_id }).await? {
+        Some(updated_comment) => {
+            let comment_response = CommentResponse::from(updated_comment);
+            Ok(Json(json!({
+                "success": true,
+                "message": "Comment unliked successfully",
+                "comment": comment_response
+            })))
+        }
+        None => Err(AppError::invalid_data("Comment not found after update")),
+    }
+}
 pub async fn unlike_post(
     State(state): State<AppState>,
     Path(post_id): Path<String>,
@@ -1176,10 +1267,10 @@ pub async fn create_comment(
         Err(_) => return Err(AppError::PostNotFound),
     };
 
-    let post_exists = post_collection.find_one(doc! { "_id": post_object_id }).await?;
-    if post_exists.is_none() {
-        return Err(AppError::PostNotFound);
-    }
+    let post = match post_collection.find_one(doc! { "_id": post_object_id }).await? {
+        Some(post) => post,
+        None => return Err(AppError::PostNotFound),
+    };
 
     let existing_comment = comment_collection.find_one(
         doc! {
@@ -1201,7 +1292,7 @@ pub async fn create_comment(
 
     let insert_result = comment_collection.insert_one(&comment).await?;
 
-    if insert_result.inserted_id.as_object_id().is_some() {
+    if let Some(comment_id) = insert_result.inserted_id.as_object_id() {
         let _ = post_collection.update_one(
             doc! { "_id": post_object_id },
             doc! {
@@ -1212,6 +1303,47 @@ pub async fn create_comment(
                 }
             }
         ).await;
+
+        // ========== SEND FCM NOTIFICATION TO POST OWNER ==========
+        // Don't notify if commenting on own post
+        if post.user_id != payload.user_id {
+            let state_clone = state.clone();
+            let post_owner_id = post.user_id.clone();
+            let commenter_name = payload.user_name.clone();
+            let comment_text = payload.comment.clone();
+            let post_id_clone = post_id.clone();
+            let comment_id_hex = comment_id.to_hex();
+
+            tokio::spawn(async move {
+                log_info!("📱 Sending push notification to post owner: {}", post_owner_id);
+
+                if let Ok(fcm_service) = crate::services::fcm_service::init_fcm_service().await {
+                    let comment_preview = if comment_text.len() > 100 {
+                        format!("{}...", &comment_text[0..100])
+                    } else {
+                        comment_text.clone()
+                    };
+
+                    let _ = fcm_service.send_to_user(
+                        &state_clone,
+                        &post_owner_id,
+                        &format!("💬 {} commented on your post", commenter_name),
+                        &comment_preview,
+                        serde_json::json!({
+                            "post_id": post_id_clone,
+                            "comment_id": comment_id_hex,
+                            "commenter_id": payload.user_id,
+                            "commenter_name": commenter_name,
+                            "comment_preview": comment_preview,
+                            "type": "post_comment",
+                            "timestamp": Utc::now().to_rfc3339(),
+                        }),
+                        "post_comment"
+                    ).await;
+                }
+            });
+        }
+        // ========== END FCM NOTIFICATION ==========
 
         let comment_response = CommentResponse::from(comment);
 
@@ -1384,69 +1516,43 @@ pub async fn like_comment(
 
     match collection.find_one(doc! { "_id": object_id }).await? {
         Some(updated_comment) => {
+            // ========== SEND FCM NOTIFICATION TO COMMENT AUTHOR ==========
+            // Don't notify if liking own comment
+            if updated_comment.user_id != payload.user_id {
+                let state_clone = state.clone();
+                let liker_name = "Someone".to_string();
+                let comment_author_id = updated_comment.user_id.clone();
+
+                let post_id_clone = updated_comment.post_id.clone();
+
+                tokio::spawn(async move {
+                    log_info!("📱 Sending push notification to comment author: {}", comment_author_id);
+
+                    if let Ok(fcm_service) = crate::services::fcm_service::init_fcm_service().await {
+                        let _ = fcm_service.send_to_user(
+                            &state_clone,
+                            &comment_author_id,
+                            &format!("❤️ {} liked your comment", liker_name),
+                            &format!("On a post"),
+                            serde_json::json!({
+                                "post_id": post_id_clone,
+                                "comment_id": comment_id,
+                                "liker_id": payload.user_id,
+                                "liker_name": liker_name,
+                                "type": "comment_like",
+                                "timestamp": Utc::now().to_rfc3339(),
+                            }),
+                            "comment_like"
+                        ).await;
+                    }
+                });
+            }
+            // ========== END FCM NOTIFICATION ==========
+
             let comment_response = CommentResponse::from(updated_comment);
             Ok(Json(json!({
                 "success": true,
                 "message": "Comment liked successfully",
-                "comment": comment_response
-            })))
-        }
-        None => Err(AppError::invalid_data("Comment not found after update")),
-    }
-}
-
-pub async fn unlike_comment(
-    State(state): State<AppState>,
-    Path(comment_id): Path<String>,
-    Json(payload): Json<LikeRequest>,
-) -> Result<Json<serde_json::Value>> {
-    let request_id = uuid::Uuid::new_v4();
-    log_info!("[{}] Starting unlike_comment handler. Comment ID: {}, User ID: {}",
-        request_id, comment_id, payload.user_id);
-
-    let collection: Collection<Comment> = state.db.collection("comments");
-
-    let object_id = match ObjectId::parse_str(&comment_id) {
-        Ok(oid) => oid,
-        Err(_) => return Err(AppError::invalid_data("Invalid comment ID")),
-    };
-
-    let comment = match collection.find_one(doc! { "_id": object_id }).await? {
-        Some(comment) => comment,
-        None => return Err(AppError::invalid_data("Comment not found")),
-    };
-
-    if !comment.liked_by.contains(&payload.user_id) {
-        let comment_response = CommentResponse::from(comment);
-        return Ok(Json(json!({
-            "success": true,
-            "message": "Comment not liked by user",
-            "comment": comment_response
-        })));
-    }
-
-    let filter = doc! { "_id": object_id };
-    let update = doc! {
-        "$inc": { "likes_count": -1 },
-        "$pull": { "liked_by": &payload.user_id },
-        "$set": {
-            "updated_at": Utc::now(),
-            "last_modified": Utc::now()
-        }
-    };
-
-    let result = collection.update_one(filter, update).await?;
-
-    if result.matched_count == 0 {
-        return Err(AppError::invalid_data("Comment not found"));
-    }
-
-    match collection.find_one(doc! { "_id": object_id }).await? {
-        Some(updated_comment) => {
-            let comment_response = CommentResponse::from(updated_comment);
-            Ok(Json(json!({
-                "success": true,
-                "message": "Comment unliked successfully",
                 "comment": comment_response
             })))
         }

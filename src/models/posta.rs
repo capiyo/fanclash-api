@@ -298,6 +298,7 @@ impl From<Comment> for CommentResponse {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct LikeRequest {
     pub user_id: String,
+    pub user_name: String,
 }
 
 #[derive(Debug, Deserialize, Serialize, Validate)]

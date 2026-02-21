@@ -8,6 +8,7 @@ use bson::{doc, oid::ObjectId};
 use chrono::Utc;
 use futures::TryStreamExt;
 use mongodb::{Collection, Database};
+use crate::models::notification::{FCMToken, Notification};
 
 use crate::models::chat::{
     ChatMessage, ChatMessageResponse, CreateChatMessage, UpdateChatMessage,
@@ -86,6 +87,7 @@ pub async fn get_post_messages(
 }
 
 // POST /chat/:post_id/messages
+// POST /chat/:post_id/messages - UPDATED WITH FCM NOTIFICATIONS
 pub async fn create_message(
     State(state): State<AppState>,
     Path(post_id): Path<String>,
@@ -93,20 +95,20 @@ pub async fn create_message(
 ) -> impl IntoResponse {
     println!("📝 Creating message for post: {}", post_id);
     println!("📨 Sender: {} ({})", payload.sender_name, payload.sender_id);
-    println!("📨 Receiver: {} ({})", payload.receiver_name, payload.receiver_id); // Added log
+    println!("📨 Receiver: {} ({})", payload.receiver_name, payload.receiver_id);
     println!("💬 Message: {}", payload.message);
 
     let collection = get_chat_collection(&state.db);
 
-    // Create new message document with receiver_name
+    // Create new message document
     let chat_message = ChatMessage {
         id: None,
         post_id: post_id.clone(),
-        sender_id: payload.sender_id,
-        receiver_id: payload.receiver_id,
-        sender_name: payload.sender_name,
-        receiver_name: payload.receiver_name, // ADDED THIS FIELD
-        message: payload.message,
+        sender_id: payload.sender_id.clone(),
+        receiver_id: payload.receiver_id.clone(),
+        sender_name: payload.sender_name.clone(),
+        receiver_name: payload.receiver_name.clone(),
+        message: payload.message.clone(),
         seen: false,
         created_at: bson::DateTime::from_chrono(Utc::now()),
         updated_at: None,
@@ -122,8 +124,108 @@ pub async fn create_message(
                 let filter = doc! { "_id": object_id };
                 match collection.find_one(filter).await {
                     Ok(Some(saved_message)) => {
-                        let response = ChatMessageResponse::from(saved_message);
+                        let response = ChatMessageResponse::from(saved_message.clone());
                         println!("✅ Message saved and retrieved successfully");
+
+                        // ========== SEND FCM NOTIFICATION TO RECEIVER ==========
+                        let state_clone = state.clone();
+                        let receiver_id = payload.receiver_id.clone();
+                        let sender_name = payload.sender_name.clone();
+                        let message_text = payload.message.clone();
+                        let message_id = object_id.to_hex();
+                        let post_id_clone = post_id.clone();
+
+                        tokio::spawn(async move {
+                            println!("📱 Sending push notification to receiver: {}", receiver_id);
+
+                            // Initialize FCM service
+                            if let Ok(fcm_service) = crate::services::fcm_service::init_fcm_service().await {
+
+                                // Get receiver's FCM tokens
+                                let tokens_collection: Collection<FCMToken> =
+                                    state_clone.db.collection("fcm_tokens");
+                                let token_filter = doc! { "user_id": &receiver_id };
+
+                                match tokens_collection.count_documents(token_filter).await {
+                                    Ok(token_count) => {
+                                        if token_count > 0 {
+                                            println!("📱 Found {} tokens for receiver", token_count);
+
+                                            // Create message preview
+                                            let message_preview = if message_text.len() > 50 {
+                                                format!("{}...", &message_text[0..50])
+                                            } else {
+                                                message_text.clone()
+                                            };
+
+                                            // Send notification
+                                            let notification_result = fcm_service.send_to_user(
+                                                &state_clone,
+                                                &receiver_id,
+                                                &format!("💬 New message from {}", sender_name),
+                                                &message_preview,
+                                                serde_json::json!({
+                                                    "post_id": post_id_clone,
+                                                    "message_id": message_id,
+                                                    "sender_id": payload.sender_id,
+                                                    "sender_name": sender_name,
+                                                    "receiver_id": receiver_id,
+                                                    "message_preview": message_preview,
+                                                    "type": "chat_message",
+                                                    "timestamp": Utc::now().to_rfc3339(),
+                                                }),
+                                                "chat_message"
+                                            ).await;
+
+                                            match notification_result {
+                                                Ok(sent) => {
+                                                    if sent {
+                                                        println!("✅ Push notification sent successfully to receiver");
+                                                    } else {
+                                                        println!("⚠️ Push notification may not have been delivered (no tokens?)");
+                                                    }
+                                                }
+                                                Err(e) => {
+                                                    eprintln!("❌ Error sending push notification: {}", e);
+                                                }
+                                            }
+
+                                            // Save notification to database
+                                            let notifications_collection: Collection<Notification> =
+                                                state_clone.db.collection("notifications");
+
+                                            let notification = Notification {
+                                                id: None,
+                                                user_id: receiver_id,
+                                                notification_type: "chat_message".to_string(),
+                                                title: format!("New message from {}", sender_name),
+                                                body: message_preview,
+                                                data: serde_json::json!({
+                                                    "post_id": post_id_clone,
+                                                    "message_id": message_id,
+                                                    "sender_id": payload.sender_id,
+                                                    "sender_name": sender_name,
+                                                    "type": "chat_message"
+                                                }),
+                                                is_read: false,
+                                                created_at: bson::DateTime::from_chrono(Utc::now()),
+                                            };
+
+                                            let _ = notifications_collection.insert_one(notification).await;
+                                        } else {
+                                            println!("📱 No FCM tokens found for receiver: {}", receiver_id);
+                                        }
+                                    }
+                                    Err(e) => {
+                                        eprintln!("❌ Error checking receiver tokens: {}", e);
+                                    }
+                                }
+                            } else {
+                                eprintln!("❌ Failed to initialize FCM service");
+                            }
+                        });
+                        // ========== END FCM NOTIFICATION ==========
+
                         (StatusCode::CREATED, Json(ApiResponse::success(response)))
                     }
                     Ok(None) => {
