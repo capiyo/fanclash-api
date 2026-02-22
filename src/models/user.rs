@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 use mongodb::bson::oid::ObjectId;
 use mongodb::bson;
 
+use crate::models::otp::ResetOTP;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct User {
     #[serde(rename = "_id", skip_serializing_if = "Option::is_none")]
@@ -13,10 +15,13 @@ pub struct User {
     pub balance: f64,
 
     #[serde(with = "bson::serde_helpers::chrono_datetime_as_bson_datetime")]
-    pub created_at: DateTime<Utc>,  // Changed from Option<DateTime<Utc>>
+    pub created_at: DateTime<Utc>,
 
     #[serde(with = "bson::serde_helpers::chrono_datetime_as_bson_datetime")]
-    pub updated_at: DateTime<Utc>,  // Changed from Option<DateTime<Utc>>
+    pub updated_at: DateTime<Utc>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reset_otp: Option<ResetOTP>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -40,7 +45,7 @@ pub struct LoginWithPhone {
 
 #[derive(Debug, Serialize)]
 pub struct UserResponse {
-    pub id: String,  // Changed from i32 to String (ObjectId hex)
+    pub id: String,
     pub username: String,
     pub phone: String,
     pub balance: f64,
@@ -54,7 +59,7 @@ pub struct AuthResponse {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Claims {
-    pub sub: String,  // Changed from i32 to String
+    pub sub: String,
     pub username: String,
     pub phone: String,
     pub exp: usize,

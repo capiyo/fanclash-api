@@ -15,3 +15,4 @@ pub(crate) mod archive;
 pub(crate) mod notification;
 pub(crate) mod vote;      // Now just a simple declaration
 pub(crate) mod comments;      // Now just a simple declaration
+pub(crate) mod otp;      // Now just a simple declaration

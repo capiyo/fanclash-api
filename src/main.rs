@@ -19,7 +19,7 @@ mod state;
 
 use database::connection::get_db_client;
 use services::fcm_service::init_fcm_service;
-use state::AppState;
+use state::{AppState, SmsConfig};  // Updated import
 
 #[tokio::main]
 async fn main() {
@@ -47,15 +47,26 @@ async fn create_directories() {
 }
 
 async fn initialize_app_state(db: mongodb::Database) -> AppState {
-    // Initialize AppState with Cloudinary
-    let mut app_state = match AppState::new(db) {
+    // Get JWT secret from environment
+    let jwt_secret = std::env::var("JWT_SECRET")
+        .unwrap_or_else(|_| "your-secret-key-change-in-production".to_string());
+
+    // Create SMS config from environment
+    let sms_config = SmsConfig {
+        api_key: std::env::var("SMS_API_KEY").unwrap_or_default(),
+        username: std::env::var("SMS_USERNAME").unwrap_or_else(|_| "sandbox".to_string()),
+        from: std::env::var("SMS_FROM").unwrap_or_else(|_| "FanClash".to_string()),
+    };
+
+    // Initialize AppState with Cloudinary, OTP, and SMS services
+    let mut app_state = match AppState::new(db, jwt_secret, sms_config) {
         Ok(state) => {
-            tracing::info!("✅ Cloudinary service initialized successfully");
+            tracing::info!("✅ Cloudinary, OTP, and SMS services initialized successfully");
             state
         }
         Err(e) => {
-            tracing::error!("❌ Failed to initialize Cloudinary service: {}", e);
-            panic!("Failed to initialize Cloudinary service: {}", e);
+            tracing::error!("❌ Failed to initialize services: {}", e);
+            panic!("Failed to initialize services: {}", e);
         }
     };
 
@@ -141,6 +152,7 @@ async fn build_router(app_state: AppState) -> Router {
         .nest("/api/notifications", routes::vote_routes::notification_routes())
         .nest("/api/profile", routes::user_profile::user_profile_routes())
         .nest("/api", routes::posts::upload_routes())
+        .nest("/api", routes::auth_otp_routes::auth_otp_routes())  // OTP routes
         .layer(cors)
         .with_state(app_state)
 }
@@ -216,6 +228,7 @@ async fn api_health_check(State(state): State<AppState>) -> Json<Value> {
         "database": db_status,
         "mpesa": state.mpesa_service.is_some(),
         "fcm": state.fcm_service.is_some(),
+        "otp": true,  // OTP service is always available
         "timestamp": chrono::Utc::now().to_rfc3339(),
     }))
 }

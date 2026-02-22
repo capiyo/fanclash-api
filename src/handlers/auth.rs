@@ -17,7 +17,7 @@ use crate::models::user::{
 
 pub async fn register(
     State(state): State<AppState>,
-    Json(payload): Json<CreateUser>,
+    Json(payload): Json<CreateUser>,  // This is 'payload', not 'req'
 ) -> Result<Json<AuthResponse>> {
     let collection: Collection<User> = state.db.collection("users");
 
@@ -38,21 +38,20 @@ pub async fn register(
     // Hash password
     let password_hash = hash(&payload.password, DEFAULT_COST)
         .map_err(|_e| AppError::InvalidUserData)?;
-        //.map_err(|e| AppError::InvalidUserData)?;
 
-    // Create user document
+    // Create user document - FIXED: Use 'payload' not 'req'
     let user = User {
-        _id: Some(ObjectId::new()),
-        username: payload.username.clone(),
-        phone: payload.phone.clone(),
-        password_hash: password_hash.clone(),
+        _id: None,
+        username: payload.username.clone(),  // Fixed
+        phone: payload.phone.clone(),        // Fixed
+        password_hash: password_hash,        // Fixed
         balance: 0.0,
-        created_at: Utc::now(),
-        updated_at: Utc::now(),
+        created_at: chrono::Utc::now(),
+        updated_at: chrono::Utc::now(),
+        reset_otp: None,
     };
 
     // Insert user
-    //let insert_result = collection.insert_one(&user).await?;
     let _insert_result = collection.insert_one(&user).await?;
 
     // Get the inserted ID
@@ -189,8 +188,6 @@ pub async fn login_with_phone(
     }))
 }
 
-// Additional auth handlers you might want:
-
 pub async fn get_user_profile(
     State(state): State<AppState>,
     axum::extract::Path(user_id): axum::extract::Path<String>,
@@ -213,7 +210,6 @@ pub async fn get_user_profile(
 
     Ok(Json(user_response))
 }
-
 
 pub async fn get_all_users(
     State(state): State<AppState>,

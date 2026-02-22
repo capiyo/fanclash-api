@@ -73,3 +73,6 @@ tracing-subscriber = "0.3"
 dotenvy = "0.15"
 dotenv = "0.15"
 headers = "0.3"
+# Add to your Cargo.toml
+rand = "0.8"  # For generating OTP codes
+ # You already have this

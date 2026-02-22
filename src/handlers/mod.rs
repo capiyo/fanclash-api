@@ -13,3 +13,4 @@ pub(crate) mod vote_handlers;
 pub(crate) mod chat_handlers;
 pub(crate) mod archive;
 pub(crate) mod notification_handler;
+pub(crate) mod auth_otp;
