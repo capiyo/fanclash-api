@@ -1,11 +1,11 @@
 use serde::{Deserialize, Serialize};
-use bson::{oid::ObjectId, DateTime as BsonDateTime};
+use bson::DateTime as BsonDateTime;  // Removed ObjectId import since we're using String
 
 // Main Game model - matches your MongoDB documents EXACTLY
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Game {
     #[serde(rename = "_id", skip_serializing_if = "Option::is_none")]
-    pub id: Option<ObjectId>,
+    pub id: Option<String>,  // Changed from ObjectId to String
 
     #[serde(rename = "match_id")]
     pub match_id: String,
