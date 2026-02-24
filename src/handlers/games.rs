@@ -59,8 +59,8 @@ pub async fn get_games(
 
     println!("   → Fetched {} games from database", games.len());
 
-    // Sort by last_updated descending (most recent first)
-    games.sort_by(|a, b| b.last_updated.cmp(&a.last_updated));
+    // Sort by scraped_at descending (most recent first) - CHANGED HERE
+    games.sort_by(|a, b| b.scraped_at.cmp(&a.scraped_at));
 
     let elapsed = start_time.elapsed();
     println!("✅ Successfully fetched {} games in {:?}", games.len(), elapsed);
@@ -76,14 +76,9 @@ pub async fn get_game_by_id(
 
     let collection: Collection<Game> = state.db.collection("games");
 
-    println!("   → Parsing ObjectId from: {}", id);
-    let object_id = ObjectId::parse_str(&id)
-        .map_err(|e| {
-            println!("❌ Failed to parse ObjectId '{}': {:?}", id, e);
-            AppError::invalid_data("Invalid game ID format")
-        })?;
-
-    let filter = doc! { "_id": object_id };
+    println!("   → Using ID as string: {}", id);
+    // Don't parse as ObjectId - use string ID directly
+    let filter = doc! { "_id": &id };
     println!("   → Database filter: {:?}", filter);
 
     match collection.find_one(filter).await? {
@@ -152,9 +147,9 @@ pub async fn get_live_games(
     // Get current time as fallback
     let current_time = BsonDateTime::from_chrono(Utc::now());
 
-    // Find max timestamp using references only
+    // Find max timestamp using scraped_at instead of last_updated - CHANGED HERE
     let max_timestamp = live_games.iter()
-        .map(|g| g.last_updated.timestamp_millis())
+        .map(|g| g.scraped_at.timestamp_millis())
         .max()
         .unwrap_or_else(|| current_time.timestamp_millis());
 
@@ -233,10 +228,10 @@ pub async fn update_game_score(
         println!("   → Setting away_score: {}", away_score);
     }
 
-    // Always update last_updated timestamp
+    // Always update scraped_at timestamp - CHANGED HERE
     let new_timestamp = BsonDateTime::from_chrono(Utc::now());
-    update_doc.insert("last_updated", new_timestamp);
-    println!("   → Updating last_updated timestamp");
+    update_doc.insert("scraped_at", new_timestamp);
+    println!("   → Updating scraped_at timestamp");
 
     let update = doc! {
         "$set": update_doc
@@ -408,9 +403,9 @@ pub async fn get_recent_games(
     let mut games: Vec<Game> = cursor.try_collect().await?;
     println!("   → Retrieved {} games from database", games.len());
 
-    // Sort by last_updated descending (most recent first)
-    games.sort_by(|a, b| b.last_updated.cmp(&a.last_updated));
-    println!("   → Sorted games by last_updated timestamp");
+    // Sort by scraped_at descending (most recent first) - CHANGED HERE
+    games.sort_by(|a, b| b.scraped_at.cmp(&a.scraped_at));
+    println!("   → Sorted games by scraped_at timestamp");
 
     // Take only last 10
     let recent_games: Vec<Game> = games.into_iter().take(10).collect();
@@ -464,7 +459,7 @@ pub async fn update_game_status(
         "$set": {
             "status": status,
             "is_live": is_live,
-            "last_updated": update_timestamp
+            "scraped_at": update_timestamp  // CHANGED HERE from last_updated to scraped_at
         }
     };
     println!("   → Update operation: {:?}", update);
