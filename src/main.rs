@@ -19,7 +19,7 @@ mod state;
 
 use database::connection::get_db_client;
 use services::fcm_service::init_fcm_service;
-use state::{AppState, SmsConfig};  // Updated import
+use state::{AppState, SmsConfig}; // Updated import
 
 #[tokio::main]
 async fn main() {
@@ -144,15 +144,18 @@ async fn build_router(app_state: AppState) -> Router {
         .nest("/api/posts", routes::posts::routes())
         .nest("/api/bets", routes::bets::bets_routes())
         .nest("/api/pledges", routes::pledges::routes())
-        .nest("/api/mpesa", routes::mpesa::mpesa_routes())
+        .nest("/api/lipaclash", routes::mpesa::mpesa_routes())
         .nest("/api/votes", routes::vote_routes::vote_routes())
         .nest("/api/archive", routes::archive::archive_routes())
         .nest("/api/chats", routes::chat::routes())
         .nest("/comments", routes::posts::comment_routes())
-        .nest("/api/notifications", routes::vote_routes::notification_routes())
+        .nest(
+            "/api/notifications",
+            routes::vote_routes::notification_routes(),
+        )
         .nest("/api/profile", routes::user_profile::user_profile_routes())
         .nest("/api", routes::posts::upload_routes())
-        .nest("/api", routes::auth_otp_routes::auth_otp_routes())  // OTP routes
+        .nest("/api", routes::auth_otp_routes::auth_otp_routes()) // OTP routes
         .layer(cors)
         .with_state(app_state)
 }
