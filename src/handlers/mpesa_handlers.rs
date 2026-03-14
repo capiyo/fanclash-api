@@ -301,6 +301,7 @@ pub async fn mpesa_callback(
 
 // ✅ HANDLER 3: Check Payment Status (POST - for frontend polling)
 // ✅ HANDLER 3: Check Payment Status (POST - for frontend polling) - FIXED
+// ✅ HANDLER 3: Check Payment Status (POST - for frontend polling) - FIXED
 pub async fn check_payment_status(
     State(state): State<AppState>,
     Json(request): Json<StatusRequest>,
@@ -315,16 +316,27 @@ pub async fn check_payment_status(
 
     match collection.find_one(filter).await {
         Ok(Some(transaction)) => {
-            // Determine if payment succeeded or failed
+            // Safely handle Option fields
             let is_success = transaction.status == "completed";
             let is_failed = transaction.status == "failed";
+
+            // Convert Option fields safely
+            let result_code = match transaction.result_code {
+                Some(code) => json!(code),
+                None => json!(null),
+            };
+
+            let result_desc = match transaction.result_desc {
+                Some(ref desc) => json!(desc),
+                None => json!(null),
+            };
 
             let response = json!({
                 "success": is_success,
                 "failed": is_failed,
                 "status": transaction.status,
-                "result_code": transaction.result_code,
-                "result_desc": transaction.result_desc,
+                "result_code": result_code,
+                "result_desc": result_desc,
                 "checkout_request_id": transaction.checkout_request_id,
                 "merchant_request_id": transaction.merchant_request_id,
                 "amount": transaction.amount,
@@ -354,19 +366,20 @@ pub async fn check_payment_status(
         }
         Err(e) => {
             println!("❌ Database error: {}", e);
+            // Return a graceful error instead of 500
             (
-                StatusCode::INTERNAL_SERVER_ERROR,
+                StatusCode::OK, // Return 200 with error status
                 AxumJson(json!({
                     "success": false,
                     "failed": false,
-                    "status": "error",
-                    "error": format!("Database error: {}", e)
+                    "status": "pending",
+                    "checkout_request_id": request.checkout_request_id,
+                    "message": "Error checking status, will retry"
                 })),
             )
         }
     }
 }
-
 // ✅ HANDLER 4: Check Transaction Status (GET with query)
 pub async fn check_transaction_status(
     State(state): State<AppState>,
