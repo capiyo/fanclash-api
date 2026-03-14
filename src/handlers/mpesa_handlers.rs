@@ -199,6 +199,7 @@ pub async fn initiate_stk_push(
 }
 
 // ✅ HANDLER 2: M-Pesa Callback
+// ✅ HANDLER 2: M-Pesa Callback - FIXED VERSION
 pub async fn mpesa_callback(
     State(state): State<AppState>,
     Json(payload): Json<MpesaCallback>,
@@ -231,58 +232,132 @@ pub async fn mpesa_callback(
 
     let collection: Collection<Transaction> = state.db.collection("transactions");
     let checkout_id = callback.checkout_request_id.clone();
-    let merchant_id = callback.merchant_request_id.clone();
 
+    // STEP 1: Find the transaction using ONLY checkout_request_id
+    // merchant_request_id can vary in format, so don't use it for matching
     let filter = doc! {
         "checkout_request_id": &checkout_id,
-        "merchant_request_id": &merchant_id
     };
 
-    let status = if callback.result_code == 0 {
-        "completed"
-    } else {
-        "failed"
-    };
+    match collection.find_one(filter).await {
+        Ok(Some(transaction)) => {
+            println!("✅ Found transaction in database");
+            println!("📦 Transaction ID: {:?}", transaction.id);
+            println!("📦 Current status: {}", transaction.status);
 
-    match collection.find_one(filter.clone()).await {
-        Ok(Some(_transaction)) => {
+            // STEP 2: Get the MongoDB _id for reliable updating
+            let id = match &transaction.id {
+                Some(id) => {
+                    println!("✅ Using _id for update: {:?}", id);
+                    id
+                }
+                None => {
+                    error!("❌ Transaction found but missing _id field!");
+                    return AxumJson(json!({
+                        "ResultCode": 1,
+                        "ResultDesc": "Transaction missing ID field"
+                    }));
+                }
+            };
+
+            // STEP 3: Determine new status based on ResultCode
+            let status = if callback.result_code == 0 {
+                "completed"
+            } else {
+                "failed"
+            };
+
+            println!("🔄 Updating transaction status to: {}", status);
+
+            // STEP 4: Extract amount from callback metadata if available
+            let mut amount = 0.0;
+            if let Some(metadata) = &callback.callback_metadata {
+                for item in &metadata.items {
+                    if item.name == "Amount" {
+                        if let serde_json::Value::Number(num) = &item.value {
+                            amount = num.as_f64().unwrap_or(0.0);
+                            println!("💰 Amount from callback: Ksh {}", amount);
+                        }
+                        break;
+                    }
+                }
+            }
+
+            // STEP 5: Extract M-Pesa receipt number if available
+            let mut mpesa_receipt = String::new();
+            if let Some(metadata) = &callback.callback_metadata {
+                for item in &metadata.items {
+                    if item.name == "MpesaReceiptNumber" {
+                        if let serde_json::Value::String(receipt) = &item.value {
+                            mpesa_receipt = receipt.clone();
+                            println!("🧾 Receipt: {}", mpesa_receipt);
+                        }
+                        break;
+                    }
+                }
+            }
+
+            // STEP 6: Update using the document's _id (guaranteed to work)
             let update = doc! {
                 "$set": {
                     "status": status,
                     "result_code": callback.result_code,
                     "result_desc": &callback.result_desc,
-                    "updated_at": Utc::now().to_rfc3339(),   // ✅ String
-                    "completed_at": Utc::now().to_rfc3339(), // ✅ String
+                    "mpesa_receipt": mpesa_receipt,
+                    "updated_at": Utc::now().to_rfc3339(),
+                    "completed_at": Utc::now().to_rfc3339(),
                 }
             };
 
-            if let Ok(result) = collection.update_one(filter, update).await {
-                if result.matched_count > 0 {
-                    info!("Updated transaction {} to {}", checkout_id, status);
-
-                    if callback.result_code == 0 {
-                        let mut amount = 0.0;
-                        if let Some(metadata) = &callback.callback_metadata {
-                            for item in &metadata.items {
-                                if item.name == "Amount" {
-                                    if let serde_json::Value::Number(num) = &item.value {
-                                        amount = num.as_f64().unwrap_or(0.0);
-                                    }
-                                    break;
-                                }
-                            }
-                        }
-                        info!(
-                            "Payment successful: Ksh {} for checkout {}",
-                            amount, checkout_id
+            match collection.update_one(doc! { "_id": id }, update).await {
+                Ok(result) => {
+                    if result.matched_count > 0 {
+                        println!(
+                            "✅ SUCCESS: Updated transaction {} to {}",
+                            checkout_id, status
                         );
+                        info!(
+                            "Updated transaction {} to {} using _id",
+                            checkout_id, status
+                        );
+
+                        if callback.result_code == 0 {
+                            info!(
+                                "💰 Payment successful: Ksh {} for checkout {}",
+                                amount, checkout_id
+                            );
+                            println!("🎉 Payment completed successfully!");
+                        } else {
+                            println!("❌ Payment failed: {}", callback.result_desc);
+                        }
+                    } else {
+                        println!("⚠️ No document matched the _id! This should never happen.");
+                        error!("Failed to update transaction: no document matched _id");
                     }
+                }
+                Err(e) => {
+                    println!("❌ Database update error: {}", e);
+                    error!("Failed to update transaction: {}", e);
                 }
             }
         }
-        Ok(None) => warn!("Transaction not found for callback: {}", checkout_id),
-        Err(e) => error!("Failed to find transaction: {}", e),
+        Ok(None) => {
+            println!("⚠️ Transaction NOT FOUND for checkout_id: {}", checkout_id);
+            println!(
+                "⚠️ This means the callback arrived but we have no record of this transaction!"
+            );
+            warn!("Transaction not found for callback: {}", checkout_id);
+        }
+        Err(e) => {
+            println!("❌ Database query error: {}", e);
+            error!("Failed to find transaction: {}", e);
+        }
     }
+
+    // STEP 7: Always return success to Safaricom (200 OK)
+    // If we don't, Safaricom will keep retrying the callback
+    println!("📤 Returning success response to Safaricom");
+    println!("🎯 [CALLBACK COMPLETE] =================================");
 
     AxumJson(json!({
         "ResultCode": 0,
