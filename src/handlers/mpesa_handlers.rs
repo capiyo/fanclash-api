@@ -22,6 +22,10 @@ pub struct StkPushRequest {
     pub account_reference: Option<String>,
     pub transaction_desc: Option<String>,
 }
+#[derive(Debug, Deserialize)]
+pub struct ValidationRequest {
+    // Can be empty - we don't need the data
+}
 
 #[derive(Debug, Deserialize)]
 pub struct StatusRequest {
@@ -72,6 +76,20 @@ pub struct CallbackItem {
     pub name: String,
     #[serde(rename = "Value")]
     pub value: serde_json::Value,
+}
+
+pub async fn mpesa_validation(
+    Json(_payload): Json<serde_json::Value>, // Ignore the payload
+) -> AxumJson<serde_json::Value> {
+    println!("✅✅✅ [VALIDATION] Received from Safaricom");
+    println!("✅✅✅ [VALIDATION] Auto-approving transaction");
+
+    // ALWAYS return success immediately
+    // This just tells Safaricom "yes, you can proceed with this transaction"
+    AxumJson(json!({
+        "ResultCode": 0,
+        "ResultDesc": "Success"
+    }))
 }
 
 // ✅ HANDLER 1: Initiate STK Push
@@ -200,7 +218,7 @@ pub async fn initiate_stk_push(
 
 // ✅ HANDLER 2: M-Pesa Callback
 // ✅ HANDLER 2: M-Pesa Callback - FIXED VERSION
-pub async fn mpesa_callback(
+pub async fn mpesa_confirmation(
     State(state): State<AppState>,
     Json(payload): Json<MpesaCallback>,
 ) -> AxumJson<serde_json::Value> {
