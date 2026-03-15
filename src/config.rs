@@ -1,4 +1,3 @@
-// config.rs
 use dotenv::dotenv;
 use std::env;
 
@@ -8,7 +7,11 @@ pub struct AppConfig {
     pub mpesa_consumer_secret: String,
     pub mpesa_short_code: String,
     pub mpesa_passkey: String,
-    pub mpesa_callback_url: String,
+    // C2B URLs
+    pub mpesa_callback_url: String,     // For STK push (old)
+    pub mpesa_validation_url: String,   // NEW: Validation endpoint
+    pub mpesa_confirmation_url: String, // NEW: Confirmation endpoint
+    // B2C URLs
     pub mpesa_b2c_result_url: String,
     pub mpesa_b2c_queue_timeout_url: String,
     pub mpesa_initiator_name: String,
@@ -24,8 +27,8 @@ impl AppConfig {
     pub fn from_env() -> Self {
         dotenv().ok();
 
-        let mpesa_environment = env::var("MPESA_ENVIRONMENT")
-            .unwrap_or_else(|_| "sandbox".to_string());
+        let mpesa_environment =
+            env::var("MPESA_ENVIRONMENT").unwrap_or_else(|_| "sandbox".to_string());
 
         let is_production = mpesa_environment == "production";
 
@@ -35,17 +38,28 @@ impl AppConfig {
         println!("IS PRODUCTION: {}", is_production);
         println!("==========================================");
 
+        // Get callback URL with default
+        let default_callback =
+            "https://fanclash-api.onrender.com/api/lipaclash/callback".to_string();
+        let default_validation =
+            "https://fanclash-api.onrender.com/api/lipaclash/validation".to_string();
+        let default_confirmation =
+            "https://fanclash-api.onrender.com/api/lipaclash/confirmation".to_string();
+
         AppConfig {
             mpesa_consumer_key: env::var("MPESA_CONSUMER_KEY")
                 .expect("MPESA_CONSUMER_KEY must be set"),
             mpesa_consumer_secret: env::var("MPESA_CONSUMER_SECRET")
                 .expect("MPESA_CONSUMER_SECRET must be set"),
-            mpesa_short_code: env::var("MPESA_SHORT_CODE")
-                .expect("MPESA_SHORT_CODE must be set"),
-            mpesa_passkey: env::var("MPESA_PASSKEY")
-                .expect("MPESA_PASSKEY must be set"),
-            mpesa_callback_url: env::var("MPESA_CALLBACK_URL")
-                .expect("MPESA_CALLBACK_URL must be set"),
+            mpesa_short_code: env::var("MPESA_SHORT_CODE").expect("MPESA_SHORT_CODE must be set"),
+            mpesa_passkey: env::var("MPESA_PASSKEY").expect("MPESA_PASSKEY must be set"),
+            // C2B URLs
+            mpesa_callback_url: env::var("MPESA_CALLBACK_URL").unwrap_or_else(|_| default_callback),
+            mpesa_validation_url: env::var("MPESA_VALIDATION_URL")
+                .unwrap_or_else(|_| default_validation),
+            mpesa_confirmation_url: env::var("MPESA_CONFIRMATION_URL")
+                .unwrap_or_else(|_| default_confirmation),
+            // B2C URLs
             mpesa_b2c_result_url: env::var("MPESA_B2C_RESULT_URL")
                 .expect("MPESA_B2C_RESULT_URL must be set"),
             mpesa_b2c_queue_timeout_url: env::var("MPESA_B2C_QUEUE_TIMEOUT_URL")
@@ -55,16 +69,13 @@ impl AppConfig {
             mpesa_security_credential: env::var("MPESA_SECURITY_CREDENTIAL")
                 .expect("MPESA_SECURITY_CREDENTIAL must be set"),
             mpesa_environment,
-            jwt_secret: env::var("JWT_SECRET")
-                .expect("JWT_SECRET must be set"),
-            database_url: env::var("DATABASE_URL")
-                .expect("DATABASE_URL must be set"),
+            jwt_secret: env::var("JWT_SECRET").expect("JWT_SECRET must be set"),
+            database_url: env::var("DATABASE_URL").expect("DATABASE_URL must be set"),
             port: env::var("PORT")
                 .unwrap_or_else(|_| "3000".to_string())
                 .parse()
                 .expect("PORT must be a number"),
-            host: env::var("HOST")
-                .unwrap_or_else(|_| "0.0.0.0".to_string()),
+            host: env::var("HOST").unwrap_or_else(|_| "0.0.0.0".to_string()),
         }
     }
 
@@ -78,13 +89,35 @@ impl AppConfig {
         println!("[CONFIG] Using M-Pesa Base URL: {}", base_url);
         println!("[CONFIG] Business Shortcode: {}", self.mpesa_short_code);
         println!("[CONFIG] Initiator: {}", self.mpesa_initiator_name);
-        println!("[CONFIG] Callback URL: {}", self.mpesa_b2c_result_url);
+        println!("[CONFIG] STK Callback URL: {}", self.mpesa_callback_url);
+        println!("[CONFIG] Validation URL: {}", self.mpesa_validation_url);
+        println!("[CONFIG] Confirmation URL: {}", self.mpesa_confirmation_url);
+        println!("[CONFIG] B2C Result URL: {}", self.mpesa_b2c_result_url);
 
-        let auth_url = format!("{}/oauth/v1/generate?grant_type=client_credentials", base_url);
+        let auth_url = format!(
+            "{}/oauth/v1/generate?grant_type=client_credentials",
+            base_url
+        );
         let stk_url = format!("{}/mpesa/stkpush/v1/processrequest", base_url);
         let b2c_url = format!("{}/mpesa/b2c/v1/paymentrequest", base_url);
 
         (auth_url, stk_url, b2c_url)
+    }
+
+    pub fn get_all_mpesa_urls(&self) -> Vec<(String, String)> {
+        vec![
+            ("STK Callback".to_string(), self.mpesa_callback_url.clone()),
+            ("Validation".to_string(), self.mpesa_validation_url.clone()),
+            (
+                "Confirmation".to_string(),
+                self.mpesa_confirmation_url.clone(),
+            ),
+            ("B2C Result".to_string(), self.mpesa_b2c_result_url.clone()),
+            (
+                "B2C Timeout".to_string(),
+                self.mpesa_b2c_queue_timeout_url.clone(),
+            ),
+        ]
     }
 
     pub fn is_production(&self) -> bool {
@@ -98,6 +131,8 @@ impl AppConfig {
             "business_shortcode": self.mpesa_short_code,
             "initiator_name": self.mpesa_initiator_name,
             "callback_url": self.mpesa_callback_url,
+            "validation_url": self.mpesa_validation_url,
+            "confirmation_url": self.mpesa_confirmation_url,
             "b2c_result_url": self.mpesa_b2c_result_url,
             "b2c_timeout_url": self.mpesa_b2c_queue_timeout_url,
             "consumer_key_set": !self.mpesa_consumer_key.is_empty(),
