@@ -1,11 +1,11 @@
 // mpesa_service.rs
+use base64::{engine::general_purpose::STANDARD as base64, Engine as _};
 use chrono::Utc;
-use base64::{Engine as _, engine::general_purpose::STANDARD as base64};
-use reqwest::{Client, header};
+use reqwest::{header, Client};
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
-use tracing::{info, error, warn};
+use tracing::{error, info, warn};
 
 use crate::config::AppConfig;
 
@@ -107,8 +107,14 @@ impl MpesaService {
             .build()
             .expect("Failed to create HTTP client");
 
-        println!("[MPESA SERVICE] Initialized in {} mode",
-                 if config.is_production() { "PRODUCTION" } else { "SANDBOX" });
+        println!(
+            "[MPESA SERVICE] Initialized in {} mode",
+            if config.is_production() {
+                "PRODUCTION"
+            } else {
+                "SANDBOX"
+            }
+        );
 
         MpesaService {
             config,
@@ -118,7 +124,11 @@ impl MpesaService {
     }
 
     fn format_phone_number(&self, phone: &str) -> String {
-        let phone = phone.trim().replace(" ", "").replace("-", "").replace("+", "");
+        let phone = phone
+            .trim()
+            .replace(" ", "")
+            .replace("-", "")
+            .replace("+", "");
 
         if phone.starts_with("254") && phone.len() == 12 {
             return phone.to_string();
@@ -140,10 +150,9 @@ impl MpesaService {
     }
 
     fn generate_password(&self, timestamp: &str) -> String {
-        let password_string = format!("{}{}{}",
-                                      self.config.mpesa_short_code,
-                                      self.config.mpesa_passkey,
-                                      timestamp
+        let password_string = format!(
+            "{}{}{}",
+            self.config.mpesa_short_code, self.config.mpesa_passkey, timestamp
         );
         base64.encode(password_string)
     }
@@ -160,18 +169,22 @@ impl MpesaService {
         }
 
         info!("Requesting new access token");
-        let auth_string = format!("{}:{}",
-                                  self.config.mpesa_consumer_key,
-                                  self.config.mpesa_consumer_secret
+        let auth_string = format!(
+            "{}:{}",
+            self.config.mpesa_consumer_key, self.config.mpesa_consumer_secret
         );
         let encoded_auth = base64.encode(auth_string);
 
         let (auth_url, _, _) = self.config.get_mpesa_urls();
 
         println!("[AUTH] URL: {}", auth_url);
-        println!("[AUTH] Consumer Key length: {}", self.config.mpesa_consumer_key.len());
+        println!(
+            "[AUTH] Consumer Key length: {}",
+            self.config.mpesa_consumer_key.len()
+        );
 
-        let response = self.client
+        let response = self
+            .client
             .get(&auth_url)
             .header(header::AUTHORIZATION, format!("Basic {}", encoded_auth))
             .send()
@@ -189,8 +202,10 @@ impl MpesaService {
 
         let auth_response: AuthResponse = response.json().await?;
 
-        println!("[AUTH] Token obtained: {}... (first 20 chars)",
-                 &auth_response.access_token[..20.min(auth_response.access_token.len())]);
+        println!(
+            "[AUTH] Token obtained: {}... (first 20 chars)",
+            &auth_response.access_token[..20.min(auth_response.access_token.len())]
+        );
 
         {
             let expiry_time = Utc::now() + chrono::Duration::hours(1);
@@ -233,10 +248,8 @@ impl MpesaService {
             party_a: formatted_phone.clone(),
             party_b: self.config.mpesa_short_code.clone(),
             phone_number: formatted_phone,
-            callback_url: self.config.mpesa_callback_url.clone(),
-            account_reference: account_reference
-                .unwrap_or("FanClash")
-                .to_string(),
+            callback_url: self.config.mpesa_confirmation_url.clone(),
+            account_reference: account_reference.unwrap_or("FanClash").to_string(),
             transaction_desc: transaction_desc
                 .unwrap_or("Payment for services")
                 .to_string(),
@@ -244,7 +257,8 @@ impl MpesaService {
 
         println!("[STK] Request: {:?}", serde_json::to_string(&stk_request)?);
 
-        let response = self.client
+        let response = self
+            .client
             .post(&stk_url)
             .header(header::AUTHORIZATION, format!("Bearer {}", access_token))
             .header(header::CONTENT_TYPE, "application/json")
@@ -284,20 +298,29 @@ impl MpesaService {
         println!("Remarks: {}", remarks);
         println!("Business Shortcode: {}", self.config.mpesa_short_code);
         println!("Initiator: {}", self.config.mpesa_initiator_name);
-        println!("Security Credential length: {}", self.config.mpesa_security_credential.len());
+        println!(
+            "Security Credential length: {}",
+            self.config.mpesa_security_credential.len()
+        );
         println!("==========================================");
 
         // CRITICAL: Check if this is production
         if self.config.is_production() {
             println!("⚠️  WARNING: This is PRODUCTION - REAL MONEY will be sent!");
-            println!("⚠️  Security Credential (first 50 chars): {}...",
-                     &self.config.mpesa_security_credential[..50.min(self.config.mpesa_security_credential.len())]);
+            println!(
+                "⚠️  Security Credential (first 50 chars): {}...",
+                &self.config.mpesa_security_credential
+                    [..50.min(self.config.mpesa_security_credential.len())]
+            );
 
             // Validate security credential length for production
             if self.config.mpesa_security_credential.len() < 100 {
                 error!("❌ CRITICAL: Production security credential is too short!");
                 error!("   Expected: ~600 chars (encrypted RSA)");
-                error!("   Got: {} chars", self.config.mpesa_security_credential.len());
+                error!(
+                    "   Got: {} chars",
+                    self.config.mpesa_security_credential.len()
+                );
                 return Err("Invalid production security credential".into());
             }
         }
@@ -343,7 +366,8 @@ impl MpesaService {
         println!("  Result URL: {}", b2c_request.result_url);
         println!("  Timeout URL: {}", b2c_request.queue_timeout_url);
 
-        let response = self.client
+        let response = self
+            .client
             .post(&b2c_url)
             .header(header::AUTHORIZATION, format!("Bearer {}", access_token))
             .header(header::CONTENT_TYPE, "application/json")
@@ -367,23 +391,34 @@ impl MpesaService {
         println!("==========================================");
         println!("✅ B2C TRANSACTION RESPONSE");
         println!("Conversation ID: {}", b2c_response.conversation_id);
-        println!("Originator Conversation ID: {}", b2c_response.originator_conversation_id);
+        println!(
+            "Originator Conversation ID: {}",
+            b2c_response.originator_conversation_id
+        );
         println!("Response Code: {}", b2c_response.response_code);
-        println!("Response Description: {}", b2c_response.response_description);
+        println!(
+            "Response Description: {}",
+            b2c_response.response_description
+        );
         println!("==========================================");
 
         info!("B2C initiated: {}", b2c_response.conversation_id);
 
         // Check if M-Pesa accepted the request
         if b2c_response.response_code != "0" {
-            error!("M-Pesa rejected B2C request: {}", b2c_response.response_description);
+            error!(
+                "M-Pesa rejected B2C request: {}",
+                b2c_response.response_description
+            );
             return Err(format!("M-Pesa error: {}", b2c_response.response_description).into());
         }
 
         Ok(b2c_response)
     }
 
-    pub async fn check_connectivity(&self) -> Result<ConnectivityStatus, Box<dyn std::error::Error>> {
+    pub async fn check_connectivity(
+        &self,
+    ) -> Result<ConnectivityStatus, Box<dyn std::error::Error>> {
         println!("[CONNECTIVITY] Checking M-Pesa connectivity...");
 
         let (auth_url, _, _) = self.config.get_mpesa_urls();
