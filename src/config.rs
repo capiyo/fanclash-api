@@ -1,282 +1,163 @@
-use crate::errors::{AppError, Result};
-use reqwest::multipart;
-use serde_json::Value;
 use std::env;
 
-#[derive(Clone)]
-pub struct CloudinaryService {
-    cloud_name: String,
-    api_key: String,
-    api_secret: String,
-    upload_preset: String,
+/// Central app configuration — loaded once at startup from environment variables.
+/// Every field has a safe default so the server never panics if optional
+/// services (M-Pesa, SMS, Cloudinary) are not yet configured.
+#[derive(Debug, Clone)]
+pub struct AppConfig {
+    // ── Core ─────────────────────────────────────────────────────────────────
+    pub jwt_secret: String,
+
+    // ── SMS (Africa's Talking) ────────────────────────────────────────────────
+    pub sms_api_key: String,
+    pub sms_username: String,
+    pub sms_from: String,
+
+    // ── M-Pesa ───────────────────────────────────────────────────────────────
+    pub mpesa_environment: String, // "sandbox" | "production"
+    pub mpesa_consumer_key: String,
+    pub mpesa_consumer_secret: String,
+    pub mpesa_short_code: String,
+    pub mpesa_passkey: String,
+    pub mpesa_initiator_name: String,
+    pub mpesa_security_credential: String,
+
+    // Callback URLs (C2B)
+    pub mpesa_confirmation_url: String,
+    pub mpesa_validation_url: String,
+
+    // Callback URLs (B2C)
+    pub mpesa_b2c_result_url: String,
+    pub mpesa_b2c_queue_timeout_url: String,
 }
 
-impl CloudinaryService {
-    /// Infallible constructor — reads env vars but never panics or returns Err.
-    /// If vars are missing, uploads will fail at call time with a clear error.
-    /// This prevents the server from crashing at startup.
-    pub fn new() -> Result<Self> {
-        let cloud_name = env::var("CLOUDINARY_CLOUD_NAME").unwrap_or_else(|_| {
-            tracing::warn!("⚠️  CLOUDINARY_CLOUD_NAME not set — image uploads will fail");
+impl AppConfig {
+    /// Load all config from environment variables.
+    /// Missing optional vars emit a warning instead of panicking.
+    pub fn from_env() -> Self {
+        // ── Core ──────────────────────────────────────────────────────────────
+        let jwt_secret = env::var("JWT_SECRET").unwrap_or_else(|_| {
+            tracing::error!("❌ JWT_SECRET not set — tokens will be invalid");
+            "insecure-default-change-me-in-production".to_string()
+        });
+
+        // ── SMS ───────────────────────────────────────────────────────────────
+        let sms_api_key = env::var("SMS_API_KEY").unwrap_or_else(|_| {
+            tracing::warn!("⚠️  SMS_API_KEY not set — OTP SMS will not send");
+            String::new()
+        });
+        let sms_username = env::var("SMS_USERNAME").unwrap_or_else(|_| "sandbox".to_string());
+        let sms_from = env::var("SMS_FROM").unwrap_or_else(|_| "FanClash".to_string());
+
+        // ── M-Pesa ────────────────────────────────────────────────────────────
+        let mpesa_environment =
+            env::var("MPESA_ENVIRONMENT").unwrap_or_else(|_| "sandbox".to_string());
+
+        let mpesa_consumer_key = env::var("MPESA_CONSUMER_KEY").unwrap_or_else(|_| {
+            tracing::warn!("⚠️  MPESA_CONSUMER_KEY not set");
+            String::new()
+        });
+        let mpesa_consumer_secret = env::var("MPESA_CONSUMER_SECRET").unwrap_or_else(|_| {
+            tracing::warn!("⚠️  MPESA_CONSUMER_SECRET not set");
             String::new()
         });
 
-        let api_key = env::var("CLOUDINARY_API_KEY").unwrap_or_else(|_| {
-            tracing::warn!("⚠️  CLOUDINARY_API_KEY not set — image uploads will fail");
+        // Daraja sandbox default shortcode
+        let mpesa_short_code =
+            env::var("MPESA_SHORT_CODE").unwrap_or_else(|_| "174379".to_string());
+
+        let mpesa_passkey = env::var("MPESA_PASSKEY").unwrap_or_else(|_| {
+            tracing::warn!("⚠️  MPESA_PASSKEY not set — STK push will fail");
             String::new()
         });
+        let mpesa_initiator_name =
+            env::var("MPESA_INITIATOR_NAME").unwrap_or_else(|_| "testapi".to_string());
+        let mpesa_security_credential =
+            env::var("MPESA_SECURITY_CREDENTIAL").unwrap_or_else(|_| {
+                tracing::warn!("⚠️  MPESA_SECURITY_CREDENTIAL not set — B2C will fail");
+                String::new()
+            });
 
-        let api_secret = env::var("CLOUDINARY_API_SECRET").unwrap_or_else(|_| {
-            tracing::warn!("⚠️  CLOUDINARY_API_SECRET not set — image uploads will fail");
-            String::new()
-        });
+        // Derive callback URLs from API_BASE_URL if not set explicitly
+        let base_url = env::var("API_BASE_URL")
+            .unwrap_or_else(|_| "https://fanclash-api.onrender.com".to_string());
 
-        let upload_preset = env::var("CLOUDINARY_UPLOAD_PRESET")
-            .unwrap_or_else(|_| "rust_backend_upload".to_string());
+        let mpesa_confirmation_url = env::var("MPESA_CONFIRMATION_URL")
+            .unwrap_or_else(|_| format!("{}/api/mpesa/confirmation", base_url));
+        let mpesa_validation_url = env::var("MPESA_VALIDATION_URL")
+            .unwrap_or_else(|_| format!("{}/api/mpesa/validation", base_url));
+        let mpesa_b2c_result_url = env::var("MPESA_B2C_RESULT_URL")
+            .unwrap_or_else(|_| format!("{}/api/mpesa/b2c/result", base_url));
+        let mpesa_b2c_queue_timeout_url = env::var("MPESA_B2C_QUEUE_TIMEOUT_URL")
+            .unwrap_or_else(|_| format!("{}/api/mpesa/b2c/timeout", base_url));
 
-        if !cloud_name.is_empty() {
-            tracing::info!("✅ Cloudinary configured for cloud: {}", cloud_name);
+        if !mpesa_consumer_key.is_empty() {
+            tracing::info!(
+                "✅ M-Pesa configured — environment: {}, shortcode: {}",
+                mpesa_environment,
+                mpesa_short_code
+            );
         }
 
-        Ok(Self {
-            cloud_name,
-            api_key,
-            api_secret,
-            upload_preset,
-        })
+        AppConfig {
+            jwt_secret,
+            sms_api_key,
+            sms_username,
+            sms_from,
+            mpesa_environment,
+            mpesa_consumer_key,
+            mpesa_consumer_secret,
+            mpesa_short_code,
+            mpesa_passkey,
+            mpesa_initiator_name,
+            mpesa_security_credential,
+            mpesa_confirmation_url,
+            mpesa_validation_url,
+            mpesa_b2c_result_url,
+            mpesa_b2c_queue_timeout_url,
+        }
     }
 
-    /// Returns true if Cloudinary is properly configured.
-    pub fn is_configured(&self) -> bool {
-        !self.cloud_name.is_empty() && !self.api_key.is_empty() && !self.api_secret.is_empty()
+    /// True when running against the live M-Pesa production API.
+    pub fn is_production(&self) -> bool {
+        self.mpesa_environment.to_lowercase() == "production"
     }
 
-    /// Upload image using upload preset (unsigned)
-    pub async fn upload_image_with_preset(
-        &self,
-        image_data: &[u8],
-        folder: &str,
-        public_id: Option<&str>,
-    ) -> Result<(String, String)> {
-        if !self.is_configured() {
-            return Err(AppError::CloudinaryError(
-                "Cloudinary is not configured. Set CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, CLOUDINARY_API_SECRET env vars.".into(),
-            ));
-        }
-
-        tracing::info!(
-            "📤 Cloudinary upload — folder: {}, size: {} bytes",
-            folder,
-            image_data.len()
-        );
-
-        let upload_url = format!(
-            "https://api.cloudinary.com/v1_1/{}/image/upload",
-            self.cloud_name
-        );
-
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .build()
-            .map_err(|e| {
-                AppError::CloudinaryError(format!("Failed to create HTTP client: {}", e))
-            })?;
-
-        let mut form = multipart::Form::new()
-            .text("upload_preset", self.upload_preset.clone())
-            .text("folder", folder.to_string());
-
-        if let Some(pid) = public_id {
-            form = form.text("public_id", pid.to_string());
-        }
-
-        let mime_type = infer::get(image_data)
-            .map(|info| info.mime_type())
-            .unwrap_or("image/jpeg");
-
-        form = form.part(
-            "file",
-            multipart::Part::bytes(image_data.to_vec())
-                .file_name("upload.jpg")
-                .mime_str(mime_type)
-                .map_err(|e| {
-                    AppError::CloudinaryError(format!("Failed to set MIME type: {}", e))
-                })?,
-        );
-
-        let response = client
-            .post(&upload_url)
-            .multipart(form)
-            .send()
-            .await
-            .map_err(|e| AppError::CloudinaryError(format!("Network error: {}", e)))?;
-
-        let status = response.status();
-        let response_text = response
-            .text()
-            .await
-            .map_err(|e| AppError::CloudinaryError(format!("Failed to read response: {}", e)))?;
-
-        tracing::debug!("Cloudinary response {}: {}", status, response_text);
-
-        let result: Value = serde_json::from_str(&response_text).map_err(|e| {
-            AppError::CloudinaryError(format!(
-                "Failed to parse response: {} — body: {}",
-                e, response_text
-            ))
-        })?;
-
-        if let Some(error) = result.get("error") {
-            let msg = error["message"]
-                .as_str()
-                .unwrap_or("Unknown Cloudinary error");
-            return Err(AppError::CloudinaryError(format!(
-                "Cloudinary error: {}",
-                msg
-            )));
-        }
-
-        let secure_url = result["secure_url"]
-            .as_str()
-            .ok_or_else(|| AppError::CloudinaryError("No secure_url in response".into()))?
-            .to_string();
-
-        let public_id_out = result["public_id"]
-            .as_str()
-            .ok_or_else(|| AppError::CloudinaryError("No public_id in response".into()))?
-            .to_string();
-
-        tracing::info!("✅ Cloudinary upload successful: {}", secure_url);
-        Ok((secure_url, public_id_out))
+    /// True when M-Pesa credentials are actually set.
+    pub fn is_mpesa_configured(&self) -> bool {
+        !self.mpesa_consumer_key.is_empty()
+            && !self.mpesa_consumer_secret.is_empty()
+            && !self.mpesa_passkey.is_empty()
     }
 
-    /// Fallback: signed upload
-    pub async fn upload_image_signed(
-        &self,
-        image_data: &[u8],
-        folder: &str,
-        public_id: Option<&str>,
-    ) -> Result<(String, String)> {
-        if !self.is_configured() {
-            return Err(AppError::CloudinaryError(
-                "Cloudinary is not configured.".into(),
-            ));
-        }
-
-        let timestamp = chrono::Utc::now().timestamp().to_string();
-
-        let mut params_to_sign = vec![
-            format!("folder={}", folder),
-            format!("timestamp={}", timestamp),
-        ];
-
-        if let Some(pid) = public_id {
-            params_to_sign.push(format!("public_id={}", pid));
-        }
-
-        params_to_sign.sort();
-        let params_string = params_to_sign.join("&");
-        let signature_string = format!("{}{}", params_string, self.api_secret);
-        let signature = format!("{:x}", md5::compute(signature_string));
-
-        let upload_url = format!(
-            "https://api.cloudinary.com/v1_1/{}/image/upload",
-            self.cloud_name
-        );
-
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .build()?;
-
-        let mut form = multipart::Form::new()
-            .text("api_key", self.api_key.clone())
-            .text("timestamp", timestamp)
-            .text("signature", signature)
-            .text("folder", folder.to_string());
-
-        if let Some(pid) = public_id {
-            form = form.text("public_id", pid.to_string());
-        }
-
-        form = form.part(
-            "file",
-            multipart::Part::bytes(image_data.to_vec())
-                .file_name("image.jpg")
-                .mime_str("image/jpeg")?,
-        );
-
-        let response = client.post(&upload_url).multipart(form).send().await?;
-        let response_text = response.text().await?;
-        let result: Value = serde_json::from_str(&response_text)?;
-
-        if let Some(error) = result.get("error") {
-            let msg = error["message"].as_str().unwrap_or("Unknown error");
-            return Err(AppError::CloudinaryError(format!(
-                "Signed upload failed: {}",
-                msg
-            )));
-        }
-
-        let secure_url = result["secure_url"]
-            .as_str()
-            .ok_or_else(|| AppError::CloudinaryError("No secure URL".into()))?
-            .to_string();
-
-        let public_id_out = result["public_id"]
-            .as_str()
-            .ok_or_else(|| AppError::CloudinaryError("No public ID".into()))?
-            .to_string();
-
-        Ok((secure_url, public_id_out))
+    /// True when SMS credentials are set.
+    pub fn is_sms_configured(&self) -> bool {
+        !self.sms_api_key.is_empty()
     }
 
-    pub async fn delete_image(&self, public_id: &str) -> Result<()> {
-        if !self.is_configured() {
-            return Ok(()); // Silently skip if not configured
+    /// Returns the three M-Pesa API URLs for (auth, STK push, B2C).
+    /// Automatically switches between sandbox and production.
+    pub fn get_mpesa_urls(&self) -> (String, String, String) {
+        if self.is_production() {
+            (
+                // Production auth
+                "https://api.safaricom.co.ke/oauth/v1/generate?grant_type=client_credentials"
+                    .to_string(),
+                // Production STK push
+                "https://api.safaricom.co.ke/mpesa/stkpush/v1/processrequest".to_string(),
+                // Production B2C
+                "https://api.safaricom.co.ke/mpesa/b2c/v1/paymentrequest".to_string(),
+            )
+        } else {
+            (
+                // Sandbox auth
+                "https://sandbox.safaricom.co.ke/oauth/v1/generate?grant_type=client_credentials"
+                    .to_string(),
+                // Sandbox STK push
+                "https://sandbox.safaricom.co.ke/mpesa/stkpush/v1/processrequest".to_string(),
+                // Sandbox B2C
+                "https://sandbox.safaricom.co.ke/mpesa/b2c/v1/paymentrequest".to_string(),
+            )
         }
-
-        let timestamp = chrono::Utc::now().timestamp().to_string();
-        let signature_data = format!(
-            "public_id={}&timestamp={}{}",
-            public_id, timestamp, self.api_secret
-        );
-        let signature = format!("{:x}", md5::compute(signature_data));
-
-        let delete_url = format!(
-            "https://api.cloudinary.com/v1_1/{}/image/destroy",
-            self.cloud_name
-        );
-
-        let params = [
-            ("public_id", public_id),
-            ("api_key", &self.api_key),
-            ("timestamp", &timestamp),
-            ("signature", &signature),
-        ];
-
-        let client = reqwest::Client::new();
-        let response = client.post(&delete_url).form(&params).send().await?;
-        let result: Value = response.json().await?;
-
-        if result["result"] != "ok" {
-            return Err(AppError::CloudinaryError(format!(
-                "Failed to delete image: {}",
-                result["result"]
-            )));
-        }
-
-        Ok(())
-    }
-
-    pub fn generate_transformed_url(&self, public_id: &str, transformations: &str) -> String {
-        format!(
-            "https://res.cloudinary.com/{}/image/upload/{}/{}",
-            self.cloud_name, transformations, public_id
-        )
-    }
-
-    pub fn generate_thumbnail_url(&self, public_id: &str, width: u32, height: u32) -> String {
-        let transformations = format!("c_fill,w_{},h_{},q_auto", width, height);
-        self.generate_transformed_url(public_id, &transformations)
     }
 }
