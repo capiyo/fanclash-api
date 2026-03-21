@@ -1,5 +1,8 @@
 use axum::{extract::State, response::Json};
 use bcrypt::{hash, verify, DEFAULT_COST};
+// NOTE: DEFAULT_COST (12) crashes Render free tier due to CPU/RAM limits.
+// Cost 8 is still secure for bcrypt and runs fine on constrained instances.
+const BCRYPT_COST: u32 = 8;
 use chrono::Utc;
 use futures_util::TryStreamExt;
 use jsonwebtoken::{encode, EncodingKey, Header};
@@ -34,7 +37,7 @@ pub async fn register(
     }
 
     // Hash password
-    let password_hash = hash(&payload.password, DEFAULT_COST)
+    let password_hash = hash(&payload.password, BCRYPT_COST)
         .map_err(|_| AppError::InternalServerError("Failed to hash password".to_string()))?;
 
     let user = User {
