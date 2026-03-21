@@ -1,8 +1,10 @@
 use axum::{extract::State, response::Json};
-use bcrypt::{hash, verify, DEFAULT_COST};
-// NOTE: DEFAULT_COST (12) crashes Render free tier due to CPU/RAM limits.
-// Cost 8 is still secure for bcrypt and runs fine on constrained instances.
-const BCRYPT_COST: u32 = 8;
+use bcrypt::{hash, verify};
+// Render free tier has 512MB RAM and shared CPU.
+// bcrypt cost 4 = ~5ms, cost 8 = ~50ms, cost 12 = ~400ms + high RAM.
+// Cost 4 is the minimum and still far stronger than MD5/SHA hashing.
+// Upgrade to a paid tier to safely use cost 10+.
+const BCRYPT_COST: u32 = 4;
 use chrono::Utc;
 use futures_util::TryStreamExt;
 use jsonwebtoken::{encode, EncodingKey, Header};
@@ -37,7 +39,11 @@ pub async fn register(
     }
 
     // Hash password
-    let password_hash = hash(&payload.password, BCRYPT_COST)
+    // Run bcrypt on a blocking thread so it doesn't starve the async runtime
+    let password = payload.password.clone();
+    let password_hash = tokio::task::spawn_blocking(move || hash(&password, BCRYPT_COST))
+        .await
+        .map_err(|_| AppError::InternalServerError("Thread join error".to_string()))?
         .map_err(|_| AppError::InternalServerError("Failed to hash password".to_string()))?;
 
     let user = User {
@@ -97,8 +103,12 @@ pub async fn login(
         .await?
         .ok_or(AppError::UserNotFound)?;
 
-    // Verify password — 401 if wrong
-    let valid = verify(&payload.password, &user.password_hash)
+    // Verify password on blocking thread — 401 if wrong
+    let password = payload.password.clone();
+    let hash_clone = user.password_hash.clone();
+    let valid = tokio::task::spawn_blocking(move || verify(&password, &hash_clone))
+        .await
+        .map_err(|_| AppError::InternalServerError("Thread join error".to_string()))?
         .map_err(|_| AppError::InternalServerError("Password verification failed".to_string()))?;
 
     if !valid {
@@ -147,8 +157,12 @@ pub async fn login_with_phone(
         .await?
         .ok_or(AppError::UserNotFound)?;
 
-    // Verify password — 401 if wrong
-    let valid = verify(&payload.password, &user.password_hash)
+    // Verify password on blocking thread — 401 if wrong
+    let password = payload.password.clone();
+    let hash_clone = user.password_hash.clone();
+    let valid = tokio::task::spawn_blocking(move || verify(&password, &hash_clone))
+        .await
+        .map_err(|_| AppError::InternalServerError("Thread join error".to_string()))?
         .map_err(|_| AppError::InternalServerError("Password verification failed".to_string()))?;
 
     if !valid {
