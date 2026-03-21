@@ -1,16 +1,19 @@
 use axum::{
-    extract::{State, Query},
+    extract::{Query, State},
     response::Json,
 };
-use serde::Deserialize;
 use chrono::Utc;
-use mongodb::{Collection, bson::{doc, oid::ObjectId}};
 use futures_util::TryStreamExt;
+use mongodb::{
+    bson::{doc, oid::ObjectId},
+    Collection,
+};
+use serde::Deserialize;
 
 use crate::{
-    state::AppState,
     errors::{AppError, Result},
-    models::pledges::{Pledge, CreatePledge, PledgeQuery},
+    models::pledges::{CreatePledge, Pledge, PledgeQuery},
+    state::AppState,
 };
 
 #[derive(Debug, Deserialize)]
@@ -28,7 +31,6 @@ pub async fn get_pledges(
 
     let collection: Collection<Pledge> = state.db.collection("pledges");
 
-    // Build MongoDB filter
     let mut filter = doc! {};
 
     if let Some(username) = &query.username {
@@ -50,7 +52,6 @@ pub async fn get_pledges(
     let cursor = collection.find(filter).await?;
     let mut pledges: Vec<Pledge> = cursor.try_collect().await?;
 
-    // Sort by created_at descending
     pledges.sort_by(|a, b| b.created_at.cmp(&a.created_at));
 
     println!("✅ Successfully fetched {} pledges", pledges.len());
@@ -64,13 +65,21 @@ pub async fn create_pledge(
 ) -> Result<Json<Pledge>> {
     println!("🎯 Creating new pledge for user: {}", payload.username);
 
-    // Validate required fields
-    if payload.username.is_empty() || payload.phone.is_empty() || payload.selection.is_empty() {
-        return Err(AppError::InvalidUserData);
+    // Validate required fields — each gets its own error message
+    if payload.username.is_empty() {
+        return Err(AppError::MissingRequiredField("username".to_string()));
+    }
+    if payload.phone.is_empty() {
+        return Err(AppError::MissingRequiredField("phone".to_string()));
+    }
+    if payload.selection.is_empty() {
+        return Err(AppError::MissingRequiredField("selection".to_string()));
     }
 
     if payload.amount <= 0.0 {
-        return Err(AppError::InvalidUserData);
+        return Err(AppError::ValidationError(
+            "amount must be greater than 0".to_string(),
+        ));
     }
 
     let collection: Collection<Pledge> = state.db.collection("pledges");
@@ -90,10 +99,12 @@ pub async fn create_pledge(
         updated_at: Utc::now(),
     };
 
-    // Insert the pledge
     collection.insert_one(&pledge).await?;
 
-    println!("✅ Successfully created pledge for user: {} - Amount: ₿{}", payload.username, payload.amount);
+    println!(
+        "✅ Successfully created pledge for user: {} - Amount: ₿{}",
+        payload.username, payload.amount
+    );
     Ok(Json(pledge))
 }
 
@@ -104,30 +115,37 @@ pub async fn get_pledge_stats(
 ) -> Result<Json<serde_json::Value>> {
     println!("📊 Getting pledge statistics...");
 
-    let (home_team, away_team) = match (&query.home_team, &query.away_team) {
-        (Some(home), Some(away)) => (home, away),
-        _ => return Err(AppError::InvalidUserData),
-    };
+    // Both home_team and away_team are required
+    let home_team = query
+        .home_team
+        .as_ref()
+        .ok_or_else(|| AppError::MissingRequiredField("home_team".to_string()))?;
+    let away_team = query
+        .away_team
+        .as_ref()
+        .ok_or_else(|| AppError::MissingRequiredField("away_team".to_string()))?;
 
     let collection: Collection<Pledge> = state.db.collection("pledges");
 
-    // Build filter for the specific match
     let filter = doc! {
         "home_team": home_team,
         "away_team": away_team
     };
 
-    // Get all pledges for this match
     let cursor = collection.find(filter.clone()).await?;
     let pledges: Vec<Pledge> = cursor.try_collect().await?;
 
-    // Calculate statistics
     let total_pledges = pledges.len() as i64;
     let total_amount: f64 = pledges.iter().map(|p| p.amount).sum();
 
-    // Count selections
-    let home_pledges = pledges.iter().filter(|p| p.selection == "home_team").count() as i64;
-    let away_pledges = pledges.iter().filter(|p| p.selection == "away_team").count() as i64;
+    let home_pledges = pledges
+        .iter()
+        .filter(|p| p.selection == "home_team")
+        .count() as i64;
+    let away_pledges = pledges
+        .iter()
+        .filter(|p| p.selection == "away_team")
+        .count() as i64;
     let draw_pledges = pledges.iter().filter(|p| p.selection == "draw").count() as i64;
 
     let stats = serde_json::json!({
@@ -155,7 +173,9 @@ pub async fn get_user_pledges(
 ) -> Result<Json<Vec<Pledge>>> {
     println!("👤 Getting user pledges...");
 
-    let username = query.username.ok_or(AppError::InvalidUserData)?;
+    let username = query
+        .username
+        .ok_or_else(|| AppError::MissingRequiredField("username".to_string()))?;
 
     let collection: Collection<Pledge> = state.db.collection("pledges");
 
@@ -169,9 +189,7 @@ pub async fn get_user_pledges(
     Ok(Json(pledges))
 }
 
-pub async fn get_recent_pledges(
-    State(state): State<AppState>,
-) -> Result<Json<Vec<Pledge>>> {
+pub async fn get_recent_pledges(State(state): State<AppState>) -> Result<Json<Vec<Pledge>>> {
     println!("🕒 Getting recent pledges...");
 
     let collection: Collection<Pledge> = state.db.collection("pledges");
@@ -183,6 +201,9 @@ pub async fn get_recent_pledges(
 
     let recent_pledges: Vec<Pledge> = pledges.into_iter().take(10).collect();
 
-    println!("✅ Successfully fetched {} recent pledges", recent_pledges.len());
+    println!(
+        "✅ Successfully fetched {} recent pledges",
+        recent_pledges.len()
+    );
     Ok(Json(recent_pledges))
 }

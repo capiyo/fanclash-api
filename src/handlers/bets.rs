@@ -1,20 +1,23 @@
 use axum::{
-    extract::{State, Query, Path},
+    extract::{Path, Query, State},
     response::Json,
 };
-use serde::Deserialize;
 use chrono::Utc;
-use mongodb::{Collection, bson::{doc, oid::ObjectId}};
 use futures_util::TryStreamExt;
+use mongodb::{
+    bson::{doc, oid::ObjectId},
+    Collection,
+};
+use serde::Deserialize;
 
 use crate::{
-    state::AppState,
     errors::{AppError, Result},
     models::bets::{
-        Bet, CreateBetRequest, UpdateBetRequest, UpdateBalanceRequest,
-        UpdatePledgeStatusRequest, BetResponse, SuccessResponse, PledgeId,
+        Bet, BetResponse, CreateBetRequest, PledgeId, SuccessResponse, UpdateBalanceRequest,
+        UpdateBetRequest, UpdatePledgeStatusRequest,
     },
     models::pledges::Pledge,
+    state::AppState,
 };
 
 #[derive(Debug, Deserialize)]
@@ -35,14 +38,16 @@ pub async fn get_bets(
 
     let collection: Collection<Bet> = state.db.collection("bets");
 
-    // Build MongoDB filter
     let mut filter = doc! {};
 
     if let Some(user_id) = &query.user_id {
-        filter.insert("$or", vec![
-            doc! { "starter_id": user_id },
-            doc! { "finisher_id": user_id }
-        ]);
+        filter.insert(
+            "$or",
+            vec![
+                doc! { "starter_id": user_id },
+                doc! { "finisher_id": user_id },
+            ],
+        );
     }
 
     if let Some(status) = &query.status {
@@ -64,12 +69,9 @@ pub async fn get_bets(
     let cursor = collection.find(filter).await?;
     let mut bets: Vec<Bet> = cursor.try_collect().await?;
 
-    // Sort by created_at descending
     bets.sort_by(|a, b| b.created_at.cmp(&a.created_at));
 
-    let responses: Vec<BetResponse> = bets.into_iter()
-        .map(BetResponse::from)
-        .collect();
+    let responses: Vec<BetResponse> = bets.into_iter().map(BetResponse::from).collect();
 
     println!("✅ Successfully fetched {} bets", responses.len());
     Ok(Json(responses))
@@ -80,42 +82,54 @@ pub async fn create_bet(
     State(state): State<AppState>,
     Json(payload): Json<CreateBetRequest>,
 ) -> Result<Json<BetResponse>> {
-    println!("🎯 Creating new bet for pledge: {}", payload.pledge_id.to_string());
+    println!(
+        "🎯 Creating new bet for pledge: {}",
+        payload.pledge_id.to_string()
+    );
 
     // Validate required fields
-    if payload.starter_id.is_empty() || payload.finisher_id.is_empty() {
-        return Err(AppError::InvalidUserData);
+    if payload.starter_id.is_empty() {
+        return Err(AppError::MissingRequiredField("starter_id".to_string()));
+    }
+    if payload.finisher_id.is_empty() {
+        return Err(AppError::MissingRequiredField("finisher_id".to_string()));
     }
 
     if payload.starter_amount <= 0.0 {
-        return Err(AppError::InvalidUserData);
+        return Err(AppError::ValidationError(
+            "starter_amount must be greater than 0".to_string(),
+        ));
     }
 
     // Validate selections
     let valid_selections = ["home_team", "away_team", "draw"];
-    if !valid_selections.contains(&payload.starter_selection.as_str()) ||
-        !valid_selections.contains(&payload.finisher_selection.as_str()) {
-        return Err(AppError::InvalidUserData);
+    if !valid_selections.contains(&payload.starter_selection.as_str())
+        || !valid_selections.contains(&payload.finisher_selection.as_str())
+    {
+        return Err(AppError::ValidationError(
+            "Invalid selection. Must be home_team, away_team or draw".to_string(),
+        ));
     }
 
-    // Check that starter and finisher have opposite selections
     if payload.starter_selection == payload.finisher_selection {
-        return Err(AppError::ValidationError("Starter and finisher must have opposite selections".to_string()));
+        return Err(AppError::ValidationError(
+            "Starter and finisher must have opposite selections".to_string(),
+        ));
     }
 
-    // Calculate finisher_amount if not provided
-    let finisher_amount = payload.finisher_amount
+    let finisher_amount = payload
+        .finisher_amount
         .unwrap_or_else(|| payload.total_pot - payload.starter_amount);
 
-    // Validate finisher amount
     if finisher_amount <= 0.0 {
-        return Err(AppError::ValidationError("Finisher amount must be greater than 0".to_string()));
+        return Err(AppError::ValidationError(
+            "Finisher amount must be greater than 0".to_string(),
+        ));
     }
 
     let collection: Collection<Bet> = state.db.collection("bets");
     let now = Utc::now();
 
-    // Convert CreateBetRequest to Bet using From trait
     let bet: Bet = Bet {
         id: Some(ObjectId::new()),
         pledge_id: payload.pledge_id.to_string(),
@@ -145,15 +159,13 @@ pub async fn create_bet(
         completed_at: None,
     };
 
-    // Alternative using From trait (if you implement it)
-    // let bet: Bet = payload.into();
-
-    // Insert the bet
     collection.insert_one(&bet).await?;
 
-    println!("✅ Successfully created bet: {} - Total Pot: ₿{}",
-             bet.id.as_ref().map(|id| id.to_hex()).unwrap_or_default(),
-             payload.total_pot);
+    println!(
+        "✅ Successfully created bet: {} - Total Pot: ₿{}",
+        bet.id.as_ref().map(|id| id.to_hex()).unwrap_or_default(),
+        payload.total_pot
+    );
 
     let response = BetResponse::from(bet);
     Ok(Json(response))
@@ -168,7 +180,6 @@ pub async fn get_bet_stats(
 
     let collection: Collection<Bet> = state.db.collection("bets");
 
-    // Build filter
     let mut filter = doc! {};
 
     if let Some(home_team) = &query.home_team {
@@ -179,14 +190,11 @@ pub async fn get_bet_stats(
         filter.insert("away_team", away_team);
     }
 
-    // Get all bets matching filter
     let cursor = collection.find(filter.clone()).await?;
     let bets: Vec<Bet> = cursor.try_collect().await?;
 
-    // Calculate statistics
     let total_bets = bets.len() as i64;
     let total_pot: f64 = bets.iter().map(|p| p.total_pot).sum();
-
     let active_bets = bets.iter().filter(|p| p.status == "active").count() as i64;
     let completed_bets = bets.iter().filter(|p| p.status == "completed").count() as i64;
 
@@ -209,7 +217,10 @@ pub async fn get_user_bets(
 ) -> Result<Json<Vec<BetResponse>>> {
     println!("👤 Getting user bets...");
 
-    let user_id = query.user_id.ok_or(AppError::InvalidUserData)?;
+    // user_id is required for this endpoint
+    let user_id = query
+        .user_id
+        .ok_or_else(|| AppError::MissingRequiredField("user_id".to_string()))?;
 
     let collection: Collection<Bet> = state.db.collection("bets");
 
@@ -225,17 +236,13 @@ pub async fn get_user_bets(
 
     bets.sort_by(|a, b| b.created_at.cmp(&a.created_at));
 
-    let responses: Vec<BetResponse> = bets.into_iter()
-        .map(BetResponse::from)
-        .collect();
+    let responses: Vec<BetResponse> = bets.into_iter().map(BetResponse::from).collect();
 
     println!("✅ Successfully fetched {} bets for user", responses.len());
     Ok(Json(responses))
 }
 
-pub async fn get_recent_bets(
-    State(state): State<AppState>,
-) -> Result<Json<Vec<BetResponse>>> {
+pub async fn get_recent_bets(State(state): State<AppState>) -> Result<Json<Vec<BetResponse>>> {
     println!("🕒 Getting recent bets...");
 
     let collection: Collection<Bet> = state.db.collection("bets");
@@ -245,10 +252,7 @@ pub async fn get_recent_bets(
 
     bets.sort_by(|a, b| b.created_at.cmp(&a.created_at));
 
-    let recent_bets: Vec<BetResponse> = bets.into_iter()
-        .take(10)
-        .map(BetResponse::from)
-        .collect();
+    let recent_bets: Vec<BetResponse> = bets.into_iter().take(10).map(BetResponse::from).collect();
 
     println!("✅ Successfully fetched {} recent bets", recent_bets.len());
     Ok(Json(recent_bets))
@@ -264,7 +268,9 @@ pub async fn get_bet_by_id(
     let collection: Collection<Bet> = state.db.collection("bets");
 
     let filter = doc! { "_id": ObjectId::parse_str(&id)? };
-    let bet = collection.find_one(filter).await?
+    let bet = collection
+        .find_one(filter)
+        .await?
         .ok_or(AppError::DocumentNotFound)?;
 
     let response = BetResponse::from(bet);
@@ -279,10 +285,11 @@ pub async fn update_bet_status(
 ) -> Result<Json<BetResponse>> {
     println!("📝 Updating bet {} status to: {}", id, payload.status);
 
-    // Validate winning selection
     let valid_selections = ["home_win", "away_win", "draw"];
     if !valid_selections.contains(&payload.winning_selection.as_str()) {
-        return Err(AppError::ValidationError("Invalid winning selection".to_string()));
+        return Err(AppError::ValidationError(
+            "Invalid winning selection".to_string(),
+        ));
     }
 
     let collection: Collection<Bet> = state.db.collection("bets");
@@ -303,7 +310,8 @@ pub async fn update_bet_status(
         .return_document(mongodb::options::ReturnDocument::After)
         .build();
 
-    let bet = collection.find_one_and_update(filter, update)
+    let bet = collection
+        .find_one_and_update(filter, update)
         .await?
         .ok_or(AppError::DocumentNotFound)?;
 
@@ -319,7 +327,9 @@ pub async fn update_user_balance(
     println!("💰 Updating balance for user: {}", payload.user_id);
 
     if payload.balance < 0.0 {
-        return Err(AppError::InvalidUserData);
+        return Err(AppError::ValidationError(
+            "Balance cannot be negative".to_string(),
+        ));
     }
 
     let collection: Collection<mongodb::bson::Document> = state.db.collection("users");
@@ -346,11 +356,16 @@ pub async fn update_pledge_status(
     Path(pledge_id): Path<String>,
     Json(payload): Json<UpdatePledgeStatusRequest>,
 ) -> Result<Json<SuccessResponse>> {
-    println!("📝 Updating pledge {} status to: {}", pledge_id, payload.status);
+    println!(
+        "📝 Updating pledge {} status to: {}",
+        pledge_id, payload.status
+    );
 
     let valid_statuses = ["matched", "completed", "cancelled"];
     if !valid_statuses.contains(&payload.status.as_str()) {
-        return Err(AppError::ValidationError("Invalid pledge status".to_string()));
+        return Err(AppError::ValidationError(
+            "Invalid pledge status".to_string(),
+        ));
     }
 
     let collection: Collection<Pledge> = state.db.collection("pledges");
