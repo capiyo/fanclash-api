@@ -12,6 +12,8 @@ pub(crate) mod otp;
 mod payment;
 pub(crate) mod pledges;
 pub(crate) mod posta;
+pub mod sub_fixture; // Add this
 pub(crate) mod transaction;
 pub(crate) mod user_profile;
+pub use sub_fixture::*;
 pub(crate) mod vote; // Now just a simple declaration // Now just a simple declaration
