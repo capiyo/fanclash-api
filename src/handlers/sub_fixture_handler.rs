@@ -9,6 +9,7 @@ use mongodb::{
     Collection,
 };
 use serde_json::json;
+use uuid::Uuid;
 
 use crate::{
     errors::{AppError, Result},
