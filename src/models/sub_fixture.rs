@@ -1,7 +1,5 @@
-// models/sub_fixture.rs
-// models/sub_fixture.rs
 use bson::{oid::ObjectId, DateTime as BsonDateTime};
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
 // ========== SUB-FIXTURE (PROP BET) MODEL ==========
@@ -42,7 +40,6 @@ pub struct SubFixtureVote {
 
 impl SubFixtureVote {
     /// Create a new SubFixtureVote with current timestamp
-    /// Uses references to avoid ownership issues
     pub fn new(
         voter_id: &str,
         username: &str,
@@ -72,6 +69,17 @@ pub struct CreateSubFixtureVoteRequest {
     pub sub_fixture_id: String,
     pub parent_fixture_id: String,
     pub selection: String,
+    // Optional fields for auto-creation
+    #[serde(default)]
+    pub question: Option<String>,
+    #[serde(default)]
+    pub option_a: Option<String>,
+    #[serde(default)]
+    pub option_b: Option<String>,
+    #[serde(default)]
+    pub option_c: Option<String>,
+    #[serde(default)]
+    pub icon: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

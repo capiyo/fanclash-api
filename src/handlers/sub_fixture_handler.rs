@@ -61,27 +61,75 @@ pub async fn get_sub_fixture_by_id(
     }
 }
 
-// ========== SUBMIT SUB-FIXTURE VOTE ==========
+// ========== SUBMIT SUB-FIXTURE VOTE (WITH AUTO-CREATE) ==========
 pub async fn submit_sub_fixture_vote(
     State(state): State<AppState>,
     Json(req): Json<CreateSubFixtureVoteRequest>,
 ) -> Result<Json<SubFixtureVoteResponse>> {
     println!("📝 POST /api/votes/sub-fixture - Creating vote");
+    println!(
+        "📊 Voter: {}, SubFixture: {}",
+        req.voter_id, req.sub_fixture_id
+    );
 
-    // Check if sub-fixture exists and is active
     let sub_fixture_collection: Collection<SubFixture> = state.db.collection("sub_fixtures");
     let sub_fixture_filter = doc! { "sub_fixture_id": &req.sub_fixture_id };
-    let sub_fixture = sub_fixture_collection.find_one(sub_fixture_filter).await?;
+    let existing_sub_fixture = sub_fixture_collection
+        .find_one(sub_fixture_filter.clone())
+        .await?;
 
-    let sub_fixture = match sub_fixture {
-        Some(sf) => sf,
+    // Auto-create sub-fixture if it doesn't exist
+    let sub_fixture = match existing_sub_fixture {
+        Some(sf) => {
+            println!("✅ Found existing sub-fixture: {}", req.sub_fixture_id);
+            sf
+        }
         None => {
-            return Ok(Json(SubFixtureVoteResponse {
-                success: false,
-                message: "Sub-fixture not found".to_string(),
-                vote_id: None,
-                data: None,
-            }));
+            println!(
+                "🆕 Sub-fixture not found, creating automatically: {}",
+                req.sub_fixture_id
+            );
+
+            let now = BsonDateTime::from_chrono(chrono::Utc::now());
+
+            // Use provided fields or create defaults
+            let question = req
+                .question
+                .clone()
+                .unwrap_or_else(|| "Prop Bet".to_string());
+            let option_a = req
+                .option_a
+                .clone()
+                .unwrap_or_else(|| "Option A".to_string());
+            let option_b = req
+                .option_b
+                .clone()
+                .unwrap_or_else(|| "Option B".to_string());
+            let option_c = req.option_c.clone();
+            let icon = req.icon.clone().unwrap_or_else(|| "🎲".to_string());
+
+            let new_sub_fixture = SubFixture {
+                id: None,
+                sub_fixture_id: req.sub_fixture_id.clone(),
+                parent_fixture_id: req.parent_fixture_id.clone(),
+                fixture_type: "prop_bet".to_string(),
+                question,
+                option_a,
+                option_b,
+                option_c,
+                odds_a: 1.0,
+                odds_b: 1.0,
+                odds_c: None,
+                is_active: true,
+                display_order: 0,
+                icon,
+                created_at: now,
+                updated_at: now,
+            };
+
+            sub_fixture_collection.insert_one(&new_sub_fixture).await?;
+            println!("✅ Auto-created sub-fixture: {}", req.sub_fixture_id);
+            new_sub_fixture
         }
     };
 
@@ -94,7 +142,7 @@ pub async fn submit_sub_fixture_vote(
         }));
     }
 
-    // Check if user has already voted on this sub-fixture
+    // Check if user has already voted
     let votes_collection: Collection<SubFixtureVote> = state.db.collection("sub_fixture_votes");
     let existing_filter = doc! {
         "voter_id": &req.voter_id,
@@ -111,7 +159,7 @@ pub async fn submit_sub_fixture_vote(
         }));
     }
 
-    // Create and insert the vote - using references to avoid ownership issues
+    // Create and insert the vote
     let new_vote = SubFixtureVote::new(
         &req.voter_id,
         &req.username,
@@ -140,7 +188,7 @@ pub async fn submit_sub_fixture_vote(
     }))
 }
 
-// ========== GET SUB-FIXTURE STATS ==========
+// ========== GET SUB-FIXTURE STATS (WITH MOCK DATA FOR NON-EXISTENT) ==========
 pub async fn get_sub_fixture_stats(
     State(state): State<AppState>,
     Path(sub_fixture_id): Path<String>,
@@ -155,7 +203,25 @@ pub async fn get_sub_fixture_stats(
 
     let sub_fixture = match sub_fixture {
         Some(sf) => sf,
-        None => return Err(AppError::DocumentNotFound),
+        None => {
+            // Return default stats for non-existent sub-fixture
+            println!(
+                "⚠️ Sub-fixture not found, returning default stats: {}",
+                sub_fixture_id
+            );
+            return Ok(Json(SubFixtureStats {
+                sub_fixture_id: sub_fixture_id.clone(),
+                question: "Prop Bet".to_string(),
+                total_votes: 0,
+                option_a_votes: 0,
+                option_b_votes: 0,
+                option_c_votes: None,
+                option_a_percentage: 0.0,
+                option_b_percentage: 0.0,
+                option_c_percentage: None,
+                user_vote: None,
+            }));
+        }
     };
 
     // Get vote counts
