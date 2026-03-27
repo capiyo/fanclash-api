@@ -80,6 +80,8 @@ pub struct CreateSubFixtureVoteRequest {
     pub option_c: Option<String>,
     #[serde(default)]
     pub icon: Option<String>,
+    #[serde(default)]
+    pub fixture_type: Option<String>, // ✅ FIX: Added fixture_type field
 }
 
 #[derive(Debug, Deserialize)]

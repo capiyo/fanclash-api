@@ -1,4 +1,3 @@
-// handlers/sub_fixture_handler.rs
 use axum::{
     extract::{Path, Query, State},
     Json,
@@ -66,11 +65,16 @@ pub async fn submit_sub_fixture_vote(
     State(state): State<AppState>,
     Json(req): Json<CreateSubFixtureVoteRequest>,
 ) -> Result<Json<SubFixtureVoteResponse>> {
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     println!("📝 POST /api/votes/sub-fixture - Creating vote");
     println!(
         "📊 Voter: {}, SubFixture: {}",
         req.voter_id, req.sub_fixture_id
     );
+    println!("🏷️ Fixture Type from request: {:?}", req.fixture_type);
+    println!("🎯 Selection: {}", req.selection);
+    println!("📦 Question: {:?}", req.question);
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 
     let sub_fixture_collection: Collection<SubFixture> = state.db.collection("sub_fixtures");
     let sub_fixture_filter = doc! { "sub_fixture_id": &req.sub_fixture_id };
@@ -82,6 +86,7 @@ pub async fn submit_sub_fixture_vote(
     let sub_fixture = match existing_sub_fixture {
         Some(sf) => {
             println!("✅ Found existing sub-fixture: {}", req.sub_fixture_id);
+            println!("   Type: {}, Question: {}", sf.fixture_type, sf.question);
             sf
         }
         None => {
@@ -108,11 +113,25 @@ pub async fn submit_sub_fixture_vote(
             let option_c = req.option_c.clone();
             let icon = req.icon.clone().unwrap_or_else(|| "🎲".to_string());
 
+            // ✅ Use the fixture_type from request, default to "prop_bet"
+            let fixture_type = req
+                .fixture_type
+                .clone()
+                .unwrap_or_else(|| "prop_bet".to_string());
+
+            println!("🏷️ Creating sub-fixture with type: {}", fixture_type);
+            println!("❓ Question: {}", question);
+            println!("🔘 Option A: {}", option_a);
+            println!("🔘 Option B: {}", option_b);
+            if let Some(c) = &option_c {
+                println!("🔘 Option C: {}", c);
+            }
+
             let new_sub_fixture = SubFixture {
                 id: None,
                 sub_fixture_id: req.sub_fixture_id.clone(),
                 parent_fixture_id: req.parent_fixture_id.clone(),
-                fixture_type: "prop_bet".to_string(),
+                fixture_type,
                 question,
                 option_a,
                 option_b,
@@ -134,6 +153,7 @@ pub async fn submit_sub_fixture_vote(
     };
 
     if !sub_fixture.is_active {
+        println!("⚠️ Sub-fixture is not active: {}", req.sub_fixture_id);
         return Ok(Json(SubFixtureVoteResponse {
             success: false,
             message: "This prop bet is no longer active".to_string(),
@@ -151,9 +171,36 @@ pub async fn submit_sub_fixture_vote(
     let existing_vote = votes_collection.find_one(existing_filter).await?;
 
     if existing_vote.is_some() {
+        println!(
+            "⚠️ User {} has already voted on this prop bet",
+            req.voter_id
+        );
         return Ok(Json(SubFixtureVoteResponse {
             success: false,
             message: "You have already voted on this prop bet".to_string(),
+            vote_id: None,
+            data: None,
+        }));
+    }
+
+    // Validate selection
+    let valid_selections = vec![sub_fixture.option_a.clone(), sub_fixture.option_b.clone()];
+    let valid_selections = if let Some(option_c) = &sub_fixture.option_c {
+        let mut v = valid_selections;
+        v.push(option_c.clone());
+        v
+    } else {
+        valid_selections
+    };
+
+    if !valid_selections.contains(&req.selection) {
+        println!(
+            "❌ Invalid selection: {} (valid: {:?})",
+            req.selection, valid_selections
+        );
+        return Ok(Json(SubFixtureVoteResponse {
+            success: false,
+            message: format!("Invalid selection: {}", req.selection),
             vote_id: None,
             data: None,
         }));
@@ -175,6 +222,9 @@ pub async fn submit_sub_fixture_vote(
         .map(|oid| oid.to_string());
 
     println!("✅ Sub-fixture vote created: {:?}", vote_id);
+    println!("   Selection: {}", req.selection);
+    println!("   Voted at: {:?}", new_vote.voted_at);
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 
     Ok(Json(SubFixtureVoteResponse {
         success: true,
