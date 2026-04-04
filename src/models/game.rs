@@ -1,11 +1,11 @@
-use serde::{Deserialize, Serialize};
 use bson::DateTime as BsonDateTime;
+use serde::{Deserialize, Serialize};
 
 // Main Game model - matches your MongoDB documents EXACTLY
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Game {
     #[serde(rename = "_id")]
-    pub id: String,  // Every document has an _id
+    pub id: String, // Every document has an _id
 
     #[serde(rename = "match_id")]
     pub match_id: String,
