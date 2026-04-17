@@ -1,6 +1,10 @@
 use crate::handlers::comrade_handler::{
-    add_comrade, get_available_users, get_comrade_stats, get_user_comrades, remove_comrade,
-    upgrade_comrade_limit,
+    add_comrade,
+    get_available_users,
+    get_comrade_stats,
+    get_user_comrades,
+    remove_comrade,
+    upgrade_comrade_limit, // Add this if you have it
 };
 use crate::state::AppState;
 use axum::{
