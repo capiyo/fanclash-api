@@ -19,7 +19,9 @@ mod state;
 
 use database::connection::get_db_client;
 use services::fcm_service::init_fcm_service;
-use state::{AppState, SmsConfig}; // Updated import
+use state::{AppState, SmsConfig};
+
+use crate::routes::auth::routes; // Updated import
 
 #[tokio::main]
 async fn main() {
@@ -141,6 +143,7 @@ async fn build_router(app_state: AppState) -> Router {
         .route("/api/simple_health_check", get(simple_health_check))
         .nest("/api/auth", routes::auth::routes())
         .nest("/api/games", routes::games::routes())
+        .nest("/api/comrades", routes::comrade_route::comrade_routes())
         .nest("/api/posts", routes::posts::routes())
         .nest("/api/bets", routes::bets::bets_routes())
         .nest("/api/pledges", routes::pledges::routes())
