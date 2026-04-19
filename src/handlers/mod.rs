@@ -17,3 +17,4 @@ pub mod sub_fixture_handler;
 pub(crate) mod user_profile;
 pub(crate) mod vote_handlers;
 pub use sub_fixture_handler::*;
+pub mod ws_handler;

@@ -61,6 +61,11 @@ pub fn vote_routes() -> Router<AppState> {
             "/comment",
             post(crate::handlers::vote_handlers::create_comment),
         )
+        // add to vote_routes() at the top of the fn body:
+        .route(
+            "/ws/comments",
+            get(crate::handlers::ws_handler::ws_comments_handler),
+        )
         .route(
             "/comments",
             get(crate::handlers::vote_handlers::get_comments),
@@ -136,6 +141,12 @@ pub fn vote_routes() -> Router<AppState> {
             "/sub-fixtures/fixture/:fixture_id/user/:user_id",
             get(crate::handlers::sub_fixture_handler::get_sub_fixtures_with_user_votes),
         )
+}
+pub fn ws_routes() -> Router<AppState> {
+    Router::new().route(
+        "/comments",
+        get(crate::handlers::ws_handler::ws_comments_handler),
+    )
 }
 
 pub fn vote_stats_routes() -> Router<AppState> {

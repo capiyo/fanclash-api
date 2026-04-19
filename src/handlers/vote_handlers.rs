@@ -1,3 +1,4 @@
+use crate::services::fcm_service;
 use axum::{
     extract::{Path, Query, State},
     response::Json,
@@ -8,15 +9,13 @@ use futures_util::TryStreamExt;
 use mongodb::{options::FindOptions, Collection};
 use serde_json::json;
 use validator::Validate;
-use crate::services::fcm_service;
 
 use crate::{
     errors::{AppError, Result},
     models::game::Game,
     models::vote::{
-        parse_iso_timestamp_or_now, validate_selection,
-        BulkVoteRequest, BulkVoteResponse, Comment, CommentQuery,
-        CommentResponse, CommentStats, CreateComment, CreateLike, CreateVote,
+        parse_iso_timestamp_or_now, validate_selection, BulkVoteRequest, BulkVoteResponse, Comment,
+        CommentQuery, CommentResponse, CommentStats, CreateComment, CreateLike, CreateVote,
         FixtureCountsResponse, FixtureStats, Like, LikeResponse, LikeStats, TotalCountsResponse,
         UserVoteStatus, Vote, VoteQuery, VoteResponse, VoteStats,
     },
@@ -29,7 +28,10 @@ pub async fn create_vote(
     State(state): State<AppState>,
     Json(payload): Json<CreateVote>,
 ) -> Result<Json<VoteResponse>> {
-    println!("🗳️ Creating vote for user: {} ({})", payload.username, payload.voter_id);
+    println!(
+        "🗳️ Creating vote for user: {} ({})",
+        payload.username, payload.voter_id
+    );
 
     // Validate payload
     payload
@@ -97,7 +99,10 @@ pub async fn create_vote(
         .await?
         .ok_or_else(|| AppError::DocumentNotFound)?;
 
-    println!("✅ Vote created successfully: {} by {}", vote_id, payload.username);
+    println!(
+        "✅ Vote created successfully: {} by {}",
+        vote_id, payload.username
+    );
 
     // ===== SEND FCM NOTIFICATIONS TO SUPPORTERS AND RIVALS =====
     let state_clone = state.clone();
@@ -106,7 +111,6 @@ pub async fn create_vote(
     tokio::spawn(async move {
         // Initialize FCM service
         if let Ok(fcm_service) = fcm_service::init_fcm_service().await {
-
             // Get all other votes for this fixture
             let other_votes_filter = doc! {
                 "fixture_id": &payload_clone.fixture_id,
@@ -131,59 +135,62 @@ pub async fn create_vote(
                         }
                     }
 
-                    let fixture_name = format!("{} vs {}", payload_clone.home_team, payload_clone.away_team);
+                    let fixture_name =
+                        format!("{} vs {}", payload_clone.home_team, payload_clone.away_team);
                     let vote_text = payload_clone.selection.replace("_", " ");
 
                     // Notify SUPPORTERS (people who voted the same way)
                     if !supporter_ids.is_empty() {
                         println!("📱 Notifying {} supporters", supporter_ids.len());
-                        let _ = fcm_service.send_to_multiple_users(
-                            &state_clone,
-                            supporter_ids,
-                            "🎉 New supporter joined you!",
-                            &format!("{} also voted {} in {}",
-                                payload_clone.username,
-                                vote_text,
-                                fixture_name
-                            ),
-                            serde_json::json!({
-                                "fixture_id": payload_clone.fixture_id,
-                                "voter_id": payload_clone.voter_id,
-                                "voter_username": payload_clone.username,
-                                "voter_selection": payload_clone.selection,
-                                "home_team": payload_clone.home_team,
-                                "away_team": payload_clone.away_team,
-                                "type": "vote_supporter",
-                                "action": "new_supporter"
-                            }),
-                            "vote_supporter"
-                        ).await;
+                        let _ = fcm_service
+                            .send_to_multiple_users(
+                                &state_clone,
+                                supporter_ids,
+                                "🎉 New supporter joined you!",
+                                &format!(
+                                    "{} also voted {} in {}",
+                                    payload_clone.username, vote_text, fixture_name
+                                ),
+                                serde_json::json!({
+                                    "fixture_id": payload_clone.fixture_id,
+                                    "voter_id": payload_clone.voter_id,
+                                    "voter_username": payload_clone.username,
+                                    "voter_selection": payload_clone.selection,
+                                    "home_team": payload_clone.home_team,
+                                    "away_team": payload_clone.away_team,
+                                    "type": "vote_supporter",
+                                    "action": "new_supporter"
+                                }),
+                                "vote_supporter",
+                            )
+                            .await;
                     }
 
                     // Notify RIVALS (people who voted differently)
                     if !rival_ids.is_empty() {
                         println!("📱 Notifying {} rivals", rival_ids.len());
-                        let _ = fcm_service.send_to_multiple_users(
-                            &state_clone,
-                            rival_ids,
-                            "⚔️ Someone voted against you!",
-                            &format!("{} voted {} in {}",
-                                payload_clone.username,
-                                vote_text,
-                                fixture_name
-                            ),
-                            serde_json::json!({
-                                "fixture_id": payload_clone.fixture_id,
-                                "voter_id": payload_clone.voter_id,
-                                "voter_username": payload_clone.username,
-                                "voter_selection": payload_clone.selection,
-                                "home_team": payload_clone.home_team,
-                                "away_team": payload_clone.away_team,
-                                "type": "vote_rival",
-                                "action": "new_rival"
-                            }),
-                            "vote_rival"
-                        ).await;
+                        let _ = fcm_service
+                            .send_to_multiple_users(
+                                &state_clone,
+                                rival_ids,
+                                "⚔️ Someone voted against you!",
+                                &format!(
+                                    "{} voted {} in {}",
+                                    payload_clone.username, vote_text, fixture_name
+                                ),
+                                serde_json::json!({
+                                    "fixture_id": payload_clone.fixture_id,
+                                    "voter_id": payload_clone.voter_id,
+                                    "voter_username": payload_clone.username,
+                                    "voter_selection": payload_clone.selection,
+                                    "home_team": payload_clone.home_team,
+                                    "away_team": payload_clone.away_team,
+                                    "type": "vote_rival",
+                                    "action": "new_rival"
+                                }),
+                                "vote_rival",
+                            )
+                            .await;
                     }
                 }
                 Err(e) => {
@@ -484,9 +491,14 @@ pub async fn create_like(
     State(state): State<AppState>,
     Json(payload): Json<CreateLike>,
 ) -> Result<Json<LikeResponse>> {
-    println!("👍 Creating like for user: {} ({})", payload.username, payload.voter_id);
+    println!(
+        "👍 Creating like for user: {} ({})",
+        payload.username, payload.voter_id
+    );
 
-    payload.validate().map_err(|e| AppError::ValidationError(e.to_string()))?;
+    payload
+        .validate()
+        .map_err(|e| AppError::ValidationError(e.to_string()))?;
 
     let collection: Collection<Like> = state.db.collection("likes");
     let existing_like_filter = doc! {
@@ -507,7 +519,10 @@ pub async fn create_like(
             total_likes = collection.count_documents(fixture_filter).await? as i64;
             message = "Like removed successfully".to_string();
             success = true;
-            println!("👎 Like removed for fixture: {} by {}", payload.fixture_id, payload.username);
+            println!(
+                "👎 Like removed for fixture: {} by {}",
+                payload.fixture_id, payload.username
+            );
         } else {
             return Ok(Json(LikeResponse {
                 success: false,
@@ -547,7 +562,10 @@ pub async fn create_like(
             like_id = Some(id.to_hex());
         }
 
-        println!("✅ Like created for fixture: {} by {}", payload.fixture_id, payload.username);
+        println!(
+            "✅ Like created for fixture: {} by {}",
+            payload.fixture_id, payload.username
+        );
 
         // ===== ADD LIKE NOTIFICATIONS HERE =====
         let state_clone = state.clone();
@@ -556,7 +574,6 @@ pub async fn create_like(
         tokio::spawn(async move {
             // Initialize FCM service
             if let Ok(fcm_service) = crate::services::fcm_service::init_fcm_service().await {
-
                 // Get fixture details from games collection
                 let games_collection: Collection<Game> = state_clone.db.collection("games");
                 let game_filter = doc! { "fixtureId": &payload_clone.fixture_id };
@@ -618,27 +635,28 @@ pub async fn create_like(
                     // Get current like count
                     let like_count = user_ids.len() as i64 + 1; // +1 for current user
 
-                    let _ = fcm_service.send_to_multiple_users(
-                        &state_clone,
-                        user_ids,
-                        "❤️ Someone liked this match",
-                        &format!("@{} liked {} ({} likes total)",
-                            payload_clone.username,
-                            fixture_name,
-                            like_count
-                        ),
-                        serde_json::json!({
-                            "fixture_id": payload_clone.fixture_id,
-                            "liker_id": payload_clone.voter_id,
-                            "liker_username": payload_clone.username,
-                            "like_count": like_count,
-                            "home_team": home_team,
-                            "away_team": away_team,
-                            "type": "like_notification",
-                            "action": "new_like"
-                        }),
-                        "like_notification"
-                    ).await;
+                    let _ = fcm_service
+                        .send_to_multiple_users(
+                            &state_clone,
+                            user_ids,
+                            "❤️ Someone liked this match",
+                            &format!(
+                                "@{} liked {} ({} likes total)",
+                                payload_clone.username, fixture_name, like_count
+                            ),
+                            serde_json::json!({
+                                "fixture_id": payload_clone.fixture_id,
+                                "liker_id": payload_clone.voter_id,
+                                "liker_username": payload_clone.username,
+                                "like_count": like_count,
+                                "home_team": home_team,
+                                "away_team": away_team,
+                                "type": "like_notification",
+                                "action": "new_like"
+                            }),
+                            "like_notification",
+                        )
+                        .await;
                 }
             }
         });
@@ -779,7 +797,10 @@ pub async fn create_comment(
     State(state): State<AppState>,
     Json(payload): Json<CreateComment>,
 ) -> Result<Json<CommentResponse>> {
-    println!("💬 Creating comment for user: {} ({})", payload.username, payload.voter_id);
+    println!(
+        "💬 Creating comment for user: {} ({})",
+        payload.username, payload.voter_id
+    );
 
     // Validate payload
     payload
@@ -835,7 +856,10 @@ pub async fn create_comment(
         .await?
         .ok_or_else(|| AppError::DocumentNotFound)?;
 
-    println!("✅ Comment created successfully: {} by {}", comment_id, payload.username);
+    println!(
+        "✅ Comment created successfully: {} by {}",
+        comment_id, payload.username
+    );
 
     // ===== SEND FCM NOTIFICATIONS FOR COMMENT =====
     let state_clone = state.clone();
@@ -845,7 +869,6 @@ pub async fn create_comment(
     tokio::spawn(async move {
         // Initialize FCM service
         if let Ok(fcm_service) = crate::services::fcm_service::init_fcm_service().await {
-
             // Get fixture details from games collection
             let games_collection: Collection<Game> = state_clone.db.collection("games");
             let game_filter = doc! { "fixtureId": &payload_clone.fixture_id };
@@ -911,29 +934,30 @@ pub async fn create_comment(
 
             if !user_ids.is_empty() {
                 println!("📱 Notifying {} users about new comment", user_ids.len());
-                let _ = fcm_service.send_to_multiple_users(
-                    &state_clone,
-                    user_ids,
-                    "💬 New comment on fixture",
-                    &format!("{} commented: \"{}\" on {}",
-                        payload_clone.username,
-                        short_comment,
-                        fixture_name
-                    ),
-                    serde_json::json!({
-                        "fixture_id": payload_clone.fixture_id,
-                        "comment_id": comment_id_for_closure,
-                        "voter_id": payload_clone.voter_id,
-                        "voter_username": payload_clone.username,
-                        "voter_selection": payload_clone.selection, // Include selection in notification
-                        "comment": comment_text,
-                        "home_team": home_team,
-                        "away_team": away_team,
-                        "type": "comment_notification",
-                        "action": "new_comment"
-                    }),
-                    "comment_notification"
-                ).await;
+                let _ = fcm_service
+                    .send_to_multiple_users(
+                        &state_clone,
+                        user_ids,
+                        "💬 New comment on fixture",
+                        &format!(
+                            "{} commented: \"{}\" on {}",
+                            payload_clone.username, short_comment, fixture_name
+                        ),
+                        serde_json::json!({
+                            "fixture_id": payload_clone.fixture_id,
+                            "comment_id": comment_id_for_closure,
+                            "voter_id": payload_clone.voter_id,
+                            "voter_username": payload_clone.username,
+                            "voter_selection": payload_clone.selection, // Include selection in notification
+                            "comment": comment_text,
+                            "home_team": home_team,
+                            "away_team": away_team,
+                            "type": "comment_notification",
+                            "action": "new_comment"
+                        }),
+                        "comment_notification",
+                    )
+                    .await;
             }
         }
     });
@@ -999,9 +1023,18 @@ pub async fn get_fixture_comments(
     let total_comments = all_comments.len() as i64;
 
     // NEW: Get comment counts by selection
-    let home_comments = all_comments.iter().filter(|c| c.selection == "home_team").count() as i64;
-    let draw_comments = all_comments.iter().filter(|c| c.selection == "draw").count() as i64;
-    let away_comments = all_comments.iter().filter(|c| c.selection == "away_team").count() as i64;
+    let home_comments = all_comments
+        .iter()
+        .filter(|c| c.selection == "home_team")
+        .count() as i64;
+    let draw_comments = all_comments
+        .iter()
+        .filter(|c| c.selection == "draw")
+        .count() as i64;
+    let away_comments = all_comments
+        .iter()
+        .filter(|c| c.selection == "away_team")
+        .count() as i64;
 
     // Get recent comments (already sorted by timestamp)
     let recent_comments: Vec<Comment> = all_comments.into_iter().take(10).collect();
@@ -1015,8 +1048,10 @@ pub async fn get_fixture_comments(
         recent_comments,
     };
 
-    println!("✅ Found {} comments for fixture (H:{} D:{} A:{})",
-        total_comments, home_comments, draw_comments, away_comments);
+    println!(
+        "✅ Found {} comments for fixture (H:{} D:{} A:{})",
+        total_comments, home_comments, draw_comments, away_comments
+    );
     Ok(Json(stats))
 }
 
@@ -1038,7 +1073,10 @@ pub async fn get_total_comments_for_fixture(
         "timestamp": Utc::now().to_rfc3339(),
     });
 
-    println!("✅ Total comments for fixture {}: {}", fixture_id, total_comments);
+    println!(
+        "✅ Total comments for fixture {}: {}",
+        fixture_id, total_comments
+    );
     Ok(Json(response))
 }
 
@@ -1268,8 +1306,10 @@ pub async fn get_all_counts_for_fixture(
         data: counts,
     };
 
-    println!("✅ All counts for fixture {}: {} votes, {} likes, {} comments",
-        fixture_id, total_votes, total_likes, total_comments);
+    println!(
+        "✅ All counts for fixture {}: {} votes, {} likes, {} comments",
+        fixture_id, total_votes, total_likes, total_comments
+    );
     Ok(Json(response))
 }
 
@@ -1340,8 +1380,10 @@ pub async fn get_total_counts(State(state): State<AppState>) -> Result<Json<Tota
         data: counts,
     };
 
-    println!("✅ Total counts: {} votes, {} likes, {} comments, {} users",
-        total_votes, total_likes, total_comments, unique_users);
+    println!(
+        "✅ Total counts: {} votes, {} likes, {} comments, {} users",
+        total_votes, total_likes, total_comments, unique_users
+    );
     Ok(Json(response))
 }
 
@@ -1349,7 +1391,10 @@ pub async fn get_batch_fixture_counts(
     State(state): State<AppState>,
     Json(payload): Json<crate::models::vote::BatchFixtureCountsRequest>,
 ) -> Result<Json<crate::models::vote::BatchFixtureCountsResponse>> {
-    println!("📊 Getting batch counts for {} fixtures", payload.fixture_ids.len());
+    println!(
+        "📊 Getting batch counts for {} fixtures",
+        payload.fixture_ids.len()
+    );
 
     let vote_collection: Collection<Vote> = state.db.collection("votes");
     let like_collection: Collection<Like> = state.db.collection("likes");
@@ -1637,7 +1682,8 @@ pub async fn get_combined_stats_for_multiple_fixtures(
         let like_stats = get_like_stats(State(state.clone()), Path(fixture_id.clone())).await?;
 
         // Get comment stats (now includes selection breakdown)
-        let comment_stats = get_comment_stats(State(state.clone()), Path(fixture_id.clone())).await?;
+        let comment_stats =
+            get_comment_stats(State(state.clone()), Path(fixture_id.clone())).await?;
 
         let stats = json!({
             "fixture_id": fixture_id,
@@ -1758,7 +1804,10 @@ pub async fn get_vote_counts_by_selection(
     State(state): State<AppState>,
     Path(fixture_id): Path<String>,
 ) -> Result<Json<serde_json::Value>> {
-    println!("📊 Getting vote counts by selection for fixture: {}", fixture_id);
+    println!(
+        "📊 Getting vote counts by selection for fixture: {}",
+        fixture_id
+    );
 
     let collection: Collection<Vote> = state.db.collection("votes");
 
@@ -1802,8 +1851,10 @@ pub async fn get_vote_counts_by_selection(
         "timestamp": Utc::now().to_rfc3339()
     });
 
-    println!("✅ Vote counts by selection for fixture {}: H:{} D:{} A:{}",
-        fixture_id, home_votes, draw_votes, away_votes);
+    println!(
+        "✅ Vote counts by selection for fixture {}: H:{} D:{} A:{}",
+        fixture_id, home_votes, draw_votes, away_votes
+    );
     Ok(Json(response))
 }
 
@@ -1811,7 +1862,10 @@ pub async fn get_comment_counts_by_selection(
     State(state): State<AppState>,
     Path(fixture_id): Path<String>,
 ) -> Result<Json<serde_json::Value>> {
-    println!("📊 Getting comment counts by selection for fixture: {}", fixture_id);
+    println!(
+        "📊 Getting comment counts by selection for fixture: {}",
+        fixture_id
+    );
 
     let collection: Collection<Comment> = state.db.collection("room");
 
@@ -1855,8 +1909,10 @@ pub async fn get_comment_counts_by_selection(
         "timestamp": Utc::now().to_rfc3339()
     });
 
-    println!("✅ Comment counts by selection for fixture {}: H:{} D:{} A:{}",
-        fixture_id, home_comments, draw_comments, away_comments);
+    println!(
+        "✅ Comment counts by selection for fixture {}: H:{} D:{} A:{}",
+        fixture_id, home_comments, draw_comments, away_comments
+    );
     Ok(Json(response))
 }
 
@@ -1874,7 +1930,9 @@ pub async fn get_fixture_engagement_summary(
     let vote_filter = doc! { "fixture_id": &fixture_id };
     let total_votes = vote_collection.count_documents(vote_filter.clone()).await? as i64;
     let total_likes = like_collection.count_documents(vote_filter.clone()).await? as i64;
-    let total_comments = comment_collection.count_documents(vote_filter.clone()).await? as i64;
+    let total_comments = comment_collection
+        .count_documents(vote_filter.clone())
+        .await? as i64;
     let total_engagement = total_votes + total_likes + total_comments;
 
     // Get breakdown by selection for votes and comments
@@ -1929,9 +1987,8 @@ pub async fn get_fixture_engagement_summary(
     };
 
     // Calculate engagement score (weighted)
-    let engagement_score = (total_votes as f64 * 1.0) +
-                          (total_likes as f64 * 0.5) +
-                          (total_comments as f64 * 1.5);
+    let engagement_score =
+        (total_votes as f64 * 1.0) + (total_likes as f64 * 0.5) + (total_comments as f64 * 1.5);
 
     let response = json!({
         "success": true,
@@ -1967,7 +2024,9 @@ pub async fn get_fixture_engagement_summary(
         "timestamp": Utc::now().to_rfc3339()
     });
 
-    println!("✅ Engagement summary for fixture {}: {} total engagement",
-        fixture_id, total_engagement);
+    println!(
+        "✅ Engagement summary for fixture {}: {} total engagement",
+        fixture_id, total_engagement
+    );
     Ok(Json(response))
 }
