@@ -18,6 +18,7 @@ axum = { version = "0.7", features = ["macros", "ws"] }
 tokio = { version = "1.0", features = ["full"] }
 tower = "0.4"
 tower-http = { version = "0.5", features = ["cors"] }
+lazy_static = "1.4"
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }

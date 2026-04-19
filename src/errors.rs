@@ -30,21 +30,27 @@ pub enum AppError {
     InvalidUserData,
 
     // ── Auth-specific errors ──────────────────────────────
-    /// Username or phone not found during login or forgot-password
     #[error("User not found")]
     UserNotFound,
 
-    /// Password does not match during login
     #[error("Invalid password")]
     InvalidPassword,
 
-    /// Username or phone already registered during register
     #[error("User already exists")]
     UserAlreadyExists,
 
-    /// A required field was missing or empty (bets, pledges, posts)
     #[error("Missing required field: {0}")]
     MissingRequiredField(String),
+
+    // NEW OTP errors
+    #[error("Phone not verified")]
+    PhoneNotVerified,
+
+    #[error("Invalid or expired OTP")]
+    InvalidOtp,
+
+    #[error("OTP session expired")]
+    OtpExpired,
     // ─────────────────────────────────────────────────────
     #[error("Post not found")]
     PostNotFound,
@@ -117,7 +123,6 @@ impl IntoResponse for AppError {
             AppError::NoImageProvided => (StatusCode::BAD_REQUEST, "No image provided".to_string()),
             AppError::InvalidUserData => (StatusCode::BAD_REQUEST, "Invalid user data".to_string()),
 
-            // Auth-specific — each gets its own precise status
             AppError::UserNotFound => (StatusCode::NOT_FOUND, "User not found".to_string()),
             AppError::InvalidPassword => (StatusCode::UNAUTHORIZED, "Invalid password".to_string()),
             AppError::UserAlreadyExists => {
@@ -126,6 +131,20 @@ impl IntoResponse for AppError {
             AppError::MissingRequiredField(f) => (
                 StatusCode::BAD_REQUEST,
                 format!("Missing required field: {}", f),
+            ),
+
+            // NEW OTP error mappings
+            AppError::PhoneNotVerified => (
+                StatusCode::FORBIDDEN,
+                "Phone number not verified".to_string(),
+            ),
+            AppError::InvalidOtp => (
+                StatusCode::BAD_REQUEST,
+                "Invalid or expired OTP".to_string(),
+            ),
+            AppError::OtpExpired => (
+                StatusCode::BAD_REQUEST,
+                "OTP has expired. Please request a new one".to_string(),
             ),
 
             AppError::PostNotFound => (StatusCode::NOT_FOUND, "Post not found".to_string()),

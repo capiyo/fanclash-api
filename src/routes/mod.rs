@@ -12,4 +12,3 @@ pub(crate) mod vote_routes;
 
 // Re-export all public functions
 pub use vote_routes::*;
-pub mod auth_otp_routes;

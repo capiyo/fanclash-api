@@ -159,7 +159,7 @@ async fn build_router(app_state: AppState) -> Router {
         )
         .nest("/api/profile", routes::user_profile::user_profile_routes())
         .nest("/api", routes::posts::upload_routes())
-        .nest("/api", routes::auth_otp_routes::auth_otp_routes()) // OTP routes
+        // OTP routes
         .layer(cors)
         .with_state(app_state)
 }

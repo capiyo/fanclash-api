@@ -62,6 +62,7 @@ dependencies = [
  "hyper-rustls 0.24.2",
  "infer",
  "jsonwebtoken",
+ "lazy_static",
  "md5",
  "mime",
  "mongodb",

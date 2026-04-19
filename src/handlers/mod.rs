@@ -5,7 +5,6 @@ pub(crate) mod pledges;
 pub(crate) mod upload;
 
 pub(crate) mod archive;
-pub(crate) mod auth_otp;
 pub(crate) mod b2c_handlers;
 pub(crate) mod bets;
 pub(crate) mod chat_handlers;
