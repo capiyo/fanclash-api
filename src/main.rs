@@ -129,7 +129,7 @@ async fn build_router(app_state: AppState) -> Router {
         .route("/api/simple_health_check", get(simple_health_check))
         // User profile routes (new - Firebase auth)
         // Existing routes
-        .nest("/api/auth", routes::auth::routes())
+        .nest("/api/auth", routes::auth::auth_routes())
         .nest("/api/games", routes::games::routes())
         .nest("/api/comrades", routes::comrade_route::comrade_routes())
         .nest("/api/posts", routes::posts::routes())
