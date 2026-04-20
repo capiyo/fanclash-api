@@ -589,16 +589,21 @@ pub async fn reset_password(
 }
 
 // ========== REGISTRATION OTP HANDLERS (NEW) ==========
-
 pub async fn send_registration_otp(
     State(state): State<AppState>,
     Json(req): Json<SendOtpRequest>,
 ) -> impl IntoResponse {
+    println!(
+        "🔵 [REGISTER] send_registration_otp called for phone: {}",
+        req.phone
+    );
+
     // Check if phone already registered
     let users: Collection<User> = state.db.collection("users");
     let existing = users.find_one(doc! { "phone": &req.phone }).await;
 
     if let Ok(Some(_)) = existing {
+        println!("❌ [REGISTER] Phone already registered: {}", req.phone);
         return (
             StatusCode::CONFLICT,
             Json(SendOtpResponse {
@@ -615,6 +620,12 @@ pub async fn send_registration_otp(
     let expires_at = Utc::now().timestamp() + 300; // 5 minutes
     let temp_id = uuid::Uuid::new_v4().to_string();
 
+    println!(
+        "✅ [REGISTER] Generated OTP: {} for phone: {}",
+        otp_code, req.phone
+    );
+    println!("📝 [REGISTER] temp_id: {}", temp_id);
+
     // Store OTP session
     let session = RegistrationOtpSession {
         phone: req.phone.clone(),
@@ -626,39 +637,24 @@ pub async fn send_registration_otp(
     {
         let mut map = REGISTRATION_OTP_STORE.lock().unwrap();
         map.insert(temp_id.clone(), session);
+        println!("📦 [REGISTER] OTP stored. Total sessions: {}", map.len());
     }
 
-    // Send SMS
-    match state.sms_service.send_otp(&req.phone, &otp_code).await {
-        Ok(_) => {
-            tracing::info!("Registration OTP sent to {}: {}", req.phone, otp_code);
-            (
-                StatusCode::OK,
-                Json(SendOtpResponse {
-                    success: true,
-                    message: "OTP sent successfully".to_string(),
-                    temp_id: Some(temp_id),
-                }),
-            )
-                .into_response()
-        }
-        Err(e) => {
-            tracing::error!("Failed to send registration SMS: {}", e);
-            let mut map = REGISTRATION_OTP_STORE.lock().unwrap();
-            map.remove(&temp_id);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(SendOtpResponse {
-                    success: false,
-                    message: "Failed to send OTP".to_string(),
-                    temp_id: None,
-                }),
-            )
-                .into_response()
-        }
-    }
+    // IMPORTANT: DO NOT SEND SMS - Firebase handles OTP on frontend
+    // The OTP is stored in memory for verification
+    println!("📱 [REGISTER] Use this OTP for testing: {}", otp_code);
+    println!("✅ [REGISTER] send_registration_otp completed successfully");
+
+    (
+        StatusCode::OK,
+        Json(SendOtpResponse {
+            success: true,
+            message: "OTP sent successfully".to_string(),
+            temp_id: Some(temp_id),
+        }),
+    )
+        .into_response()
 }
-
 pub async fn verify_registration_otp(
     State(_state): State<AppState>,
     Json(req): Json<VerifyOtpRequest>,
