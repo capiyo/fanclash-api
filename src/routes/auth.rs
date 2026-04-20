@@ -14,4 +14,5 @@ pub fn auth_routes() -> Router<AppState> {
             "/users/:user_id",
             get(crate::handlers::auth::get_user_by_id),
         )
+        .route("/user", get(crate::handlers::auth::get_user_by_username))
 }

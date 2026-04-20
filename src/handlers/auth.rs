@@ -322,6 +322,54 @@ pub async fn get_user_by_id(
     }
 }
 
+pub async fn get_user_by_username(
+    State(state): State<AppState>,
+    username: String,
+) -> impl IntoResponse {
+    println!("🔍 Looking for user by username: {}", username);
+
+    let collection: Collection<User> = state.db.collection("users");
+
+    match collection.find_one(doc! { "username": username }).await {
+        Ok(Some(user)) => {
+            let user_response = UserResponse {
+                id: user.id.unwrap().to_hex(),
+                username: user.username,
+                phone: user.phone,
+                balance: user.balance,
+            };
+
+            (
+                StatusCode::OK,
+                Json(json!({
+                    "success": true,
+                    "user": user_response
+                })),
+            )
+                .into_response()
+        }
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({
+                "success": false,
+                "message": "User not found"
+            })),
+        )
+            .into_response(),
+        Err(e) => {
+            println!("❌ Database error: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "success": false,
+                    "message": "Database error"
+                })),
+            )
+                .into_response()
+        }
+    }
+}
+
 // ========== HELPER: Generate JWT Token ==========
 fn generate_token(user_id: &str, username: &str, phone: &str) -> String {
     let claims = Claims {
