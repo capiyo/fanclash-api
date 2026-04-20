@@ -11,7 +11,6 @@ mod database;
 mod dumper;
 mod errors;
 mod handlers;
-mod middleware;
 mod models;
 mod routes;
 mod services;
@@ -19,9 +18,7 @@ mod state;
 
 use database::connection::get_db_client;
 use services::fcm_service::init_fcm_service;
-use state::{AppState, SmsConfig};
-
-use crate::routes::auth::routes; // Updated import
+use state::AppState;
 
 #[tokio::main]
 async fn main() {
@@ -49,26 +46,15 @@ async fn create_directories() {
 }
 
 async fn initialize_app_state(db: mongodb::Database) -> AppState {
-    // Get JWT secret from environment
-    let jwt_secret = std::env::var("JWT_SECRET")
-        .unwrap_or_else(|_| "your-secret-key-change-in-production".to_string());
-
-    // Create SMS config from environment
-    let sms_config = SmsConfig {
-        api_key: std::env::var("SMS_API_KEY").unwrap_or_default(),
-        username: std::env::var("SMS_USERNAME").unwrap_or_else(|_| "sandbox".to_string()),
-        from: std::env::var("SMS_FROM").unwrap_or_else(|_| "FanClash".to_string()),
-    };
-
-    // Initialize AppState with Cloudinary, OTP, and SMS services
-    let mut app_state = match AppState::new(db, jwt_secret, sms_config) {
+    // Initialize AppState - no more JWT secret or SMS config needed
+    let mut app_state = match AppState::new(db) {
         Ok(state) => {
-            tracing::info!("✅ Cloudinary, OTP, and SMS services initialized successfully");
+            tracing::info!("✅ AppState initialized successfully");
             state
         }
         Err(e) => {
-            tracing::error!("❌ Failed to initialize services: {}", e);
-            panic!("Failed to initialize services: {}", e);
+            tracing::error!("❌ Failed to initialize AppState: {}", e);
+            panic!("Failed to initialize AppState: {}", e);
         }
     };
 
@@ -141,6 +127,8 @@ async fn build_router(app_state: AppState) -> Router {
         .route("/api/health", get(api_health_check))
         .route("/debug/fcm", get(debug_fcm))
         .route("/api/simple_health_check", get(simple_health_check))
+        // User profile routes (new - Firebase auth)
+        // Existing routes
         .nest("/api/auth", routes::auth::routes())
         .nest("/api/games", routes::games::routes())
         .nest("/api/comrades", routes::comrade_route::comrade_routes())
@@ -159,7 +147,6 @@ async fn build_router(app_state: AppState) -> Router {
         )
         .nest("/api/profile", routes::user_profile::user_profile_routes())
         .nest("/api", routes::posts::upload_routes())
-        // OTP routes
         .layer(cors)
         .with_state(app_state)
 }
@@ -235,7 +222,6 @@ async fn api_health_check(State(state): State<AppState>) -> Json<Value> {
         "database": db_status,
         "mpesa": state.mpesa_service.is_some(),
         "fcm": state.fcm_service.is_some(),
-        "otp": true,  // OTP service is always available
         "timestamp": chrono::Utc::now().to_rfc3339(),
     }))
 }

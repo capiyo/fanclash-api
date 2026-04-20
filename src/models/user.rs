@@ -1,36 +1,35 @@
-use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
 use mongodb::bson::oid::ObjectId;
-use mongodb::bson;
+use serde::{Deserialize, Serialize};
 
-use crate::models::otp::ResetOTP;
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct User {
     #[serde(rename = "_id", skip_serializing_if = "Option::is_none")]
-    pub _id: Option<ObjectId>,
+    pub id: Option<ObjectId>,
+    pub firebase_uid: String,
     pub username: String,
     pub phone: String,
-    pub password_hash: String,
     pub balance: f64,
-
-    #[serde(with = "bson::serde_helpers::chrono_datetime_as_bson_datetime")]
-    pub created_at: DateTime<Utc>,
-
-    #[serde(with = "bson::serde_helpers::chrono_datetime_as_bson_datetime")]
-    pub updated_at: DateTime<Utc>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub reset_otp: Option<ResetOTP>,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
 }
 
 #[derive(Debug, Deserialize)]
-pub struct CreateUser {
+pub struct CreateUserRequest {
+    pub firebase_uid: String,
     pub username: String,
     pub phone: String,
-    pub password: String,
 }
 
+#[derive(Debug, Serialize)]
+pub struct UserResponse {
+    pub id: String,
+    pub firebase_uid: String,
+    pub username: String,
+    pub phone: String,
+    pub balance: f64,
+}
+
+// Keep these for backward compatibility if needed
 #[derive(Debug, Deserialize)]
 pub struct LoginUser {
     pub username: String,
@@ -44,20 +43,12 @@ pub struct LoginWithPhone {
 }
 
 #[derive(Debug, Serialize)]
-pub struct UserResponse {
-    pub id: String,
-    pub username: String,
-    pub phone: String,
-    pub balance: f64,
-}
-
-#[derive(Debug, Serialize)]
 pub struct AuthResponse {
     pub user: UserResponse,
     pub token: String,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Claims {
     pub sub: String,
     pub username: String,
