@@ -1,4 +1,5 @@
 use mongodb::bson::oid::ObjectId;
+use mongodb::bson::Document;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -11,7 +12,7 @@ pub struct User {
     pub balance: f64,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
-    pub reset_otp: Option<String>,
+    pub reset_otp: Option<Document>,
 }
 
 #[derive(Debug, Deserialize)]
