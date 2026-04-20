@@ -4,12 +4,11 @@ use chrono::Utc;
 use futures_util::TryStreamExt;
 use jsonwebtoken::{encode, EncodingKey, Header};
 use mongodb::{
-    bson::{doc, oid::ObjectId},
+    bson::{doc, oid::ObjectId, DateTime},
     Collection,
 };
 use serde_json::json;
 
-use crate::errors::AppError;
 use crate::models::user::{AuthResponse, Claims, CreateUserRequest, LoginUser, User, UserResponse};
 use crate::state::AppState;
 
@@ -55,14 +54,17 @@ pub async fn register(
         }
     };
 
+    // Get current time as BSON DateTime
+    let now = DateTime::from_millis(Utc::now().timestamp_millis());
+
     let user = User {
         id: None,
         username: payload.username.clone(),
         phone: payload.phone.clone(),
         password_hash,
         balance: 0.0,
-        created_at: Utc::now(),
-        updated_at: Utc::now(),
+        created_at: now,
+        updated_at: now,
         reset_otp: None,
     };
 
@@ -213,7 +215,7 @@ pub async fn get_all_users(State(state): State<AppState>) -> impl IntoResponse {
                         StatusCode::INTERNAL_SERVER_ERROR,
                         Json(json!({
                             "success": false,
-                            "message": "Failed to fetch users"
+                            "message": format!("Failed to fetch users: {}", e)
                         })),
                     )
                         .into_response();
@@ -232,6 +234,8 @@ pub async fn get_all_users(State(state): State<AppState>) -> impl IntoResponse {
                 })
                 .collect();
 
+            println!("✅ Found {} users", user_responses.len());
+
             (
                 StatusCode::OK,
                 Json(json!({
@@ -247,7 +251,7 @@ pub async fn get_all_users(State(state): State<AppState>) -> impl IntoResponse {
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(json!({
                     "success": false,
-                    "message": "Database error"
+                    "message": format!("Database error: {}", e)
                 })),
             )
                 .into_response()
@@ -324,7 +328,7 @@ fn generate_token(user_id: &str, username: &str, phone: &str) -> String {
         sub: user_id.to_string(),
         username: username.to_string(),
         phone: phone.to_string(),
-        exp: (Utc::now().timestamp() + 86400) as usize, // 24 hours
+        exp: (Utc::now().timestamp() + 86400) as usize,
     };
 
     let secret = std::env::var("JWT_SECRET").unwrap_or_else(|_| "secret".to_string());
