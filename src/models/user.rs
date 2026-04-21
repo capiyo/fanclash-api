@@ -1,4 +1,4 @@
-use mongodb::bson::{oid::ObjectId, DateTime, Document};
+use mongodb::bson::{oid::ObjectId, DateTime};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -7,19 +7,15 @@ pub struct User {
     pub id: Option<ObjectId>,
     pub username: String,
     pub phone: String,
-    pub password_hash: String,
     pub balance: f64,
     pub created_at: DateTime,
     pub updated_at: DateTime,
-    #[serde(default)]
-    pub reset_otp: Option<Document>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct CreateUserRequest {
     pub username: String,
     pub phone: String,
-    pub password: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -28,12 +24,6 @@ pub struct UserResponse {
     pub username: String,
     pub phone: String,
     pub balance: f64,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct LoginUser {
-    pub username: String,
-    pub password: String,
 }
 
 #[derive(Debug, Serialize)]

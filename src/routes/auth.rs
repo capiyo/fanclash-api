@@ -7,12 +7,18 @@ use crate::state::AppState;
 
 pub fn auth_routes() -> Router<AppState> {
     Router::new()
+        // Registration
         .route("/register", post(crate::handlers::auth::register))
-        .route("/login", post(crate::handlers::auth::login))
+        // Get users
         .route("/users", get(crate::handlers::auth::get_all_users))
+        // Get user by phone (login)
         .route(
-            "/users/:user_id",
-            get(crate::handlers::auth::get_user_by_id),
+            "/user/phone/:phone",
+            get(crate::handlers::auth::get_user_by_phone),
         )
-        .route("/user", get(crate::handlers::auth::get_user_by_username))
+        // Get user by username (check availability)
+        .route(
+            "/user/username/:username",
+            get(crate::handlers::auth::get_user_by_username),
+        )
 }
