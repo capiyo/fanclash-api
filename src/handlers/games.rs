@@ -547,60 +547,31 @@ pub async fn check_user_voted_fast(
 pub async fn get_batch_fixture_counts_fast(
     State(state): State<AppState>,
     Json(fixture_ids): Json<Vec<String>>,
-) -> Result<Json<serde_json::Value>, AppError> {
+) -> Result<Json<serde_json::Value>> {
     println!(
         "📊 Getting batch counts for {} fixtures (FAST)",
         fixture_ids.len()
     );
 
     let games_collection: Collection<Game> = state.db.collection("games");
-
-    if fixture_ids.is_empty() {
-        return Ok(Json(json!({
-            "success": true,
-            "count": 0,
-            "data": [],
-            "message": "No fixture IDs provided"
-        })));
-    }
-
     let mut results = Vec::new();
-    let mut error_count = 0;
 
     for fixture_id in fixture_ids {
-        // Log which ID we're processing to catch the problematic one
-        println!("   🔍 Processing fixture_id: {}", fixture_id);
-
         let filter = doc! { "match_id": &fixture_id };
 
-        match games_collection.find_one(filter).await {
-            Ok(Some(game)) => {
-                results.push(json!({
-                    "fixture_id": fixture_id,
-                    "votes": game.votes,
-                    "comments": game.comments,
-                }));
-                println!("   ✅ Found: votes={}", game.votes);
-            }
-            Ok(None) => {
-                println!("   ⚠️ Fixture not found: {}", fixture_id);
-                results.push(json!({
-                    "fixture_id": fixture_id,
-                    "votes": 0,
-                    "comments": 0,
-                    "error": "Fixture not found"
-                }));
-            }
-            Err(e) => {
-                error_count += 1;
-                println!("   ❌ DB Error for {}: {}", fixture_id, e);
-                results.push(json!({
-                    "fixture_id": fixture_id,
-                    "votes": 0,
-                    "comments": 0,
-                    "error": format!("Database error: {}", e)
-                }));
-            }
+        if let Some(game) = games_collection.find_one(filter).await? {
+            results.push(json!({
+                "fixture_id": fixture_id,
+                "votes": game.votes,
+                "comments": game.comments,
+            }));
+        } else {
+            results.push(json!({
+                "fixture_id": fixture_id,
+                "votes": 0,
+                "comments": 0,
+                "error": "Fixture not found"
+            }));
         }
     }
 
@@ -608,14 +579,9 @@ pub async fn get_batch_fixture_counts_fast(
         "success": true,
         "count": results.len(),
         "data": results,
-        "errors": error_count,
         "timestamp": Utc::now().to_rfc3339(),
     });
 
-    println!(
-        "✅ Returning batch counts for {} fixtures ({} errors)",
-        results.len(),
-        error_count
-    );
+    println!("✅ Returning batch counts for {} fixtures", results.len());
     Ok(Json(response))
 }
