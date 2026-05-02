@@ -1,11 +1,27 @@
 use bson::DateTime as BsonDateTime;
 use serde::{Deserialize, Serialize};
 
-// Main Game model - matches your MongoDB documents EXACTLY
+// ========== VOTER STRUCT - Individual voter in the array ==========
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Voter {
+    #[serde(rename = "userId")]
+    pub user_id: String,
+
+    #[serde(rename = "userName")]
+    pub user_name: String,
+
+    #[serde(rename = "selection")]
+    pub selection: String,
+
+    #[serde(rename = "votedAt")]
+    pub voted_at: BsonDateTime,
+}
+
+// ========== MAIN GAME MODEL ==========
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Game {
     #[serde(rename = "_id")]
-    pub id: String, // Every document has an _id
+    pub id: String,
 
     #[serde(rename = "match_id")]
     pub match_id: String,
@@ -57,9 +73,20 @@ pub struct Game {
 
     #[serde(rename = "date_iso")]
     pub date_iso: String,
+
+    // ========== NEW COUNTER FIELDS ==========
+    #[serde(rename = "votes", default)]
+    pub votes: i64,
+
+    #[serde(rename = "comments", default)]
+    pub comments: i64,
+
+    // ========== NEW VOTERS ARRAY ==========
+    #[serde(rename = "voters", default)]
+    pub voters: Vec<Voter>,
 }
 
-// For creating new games
+// ========== FOR CREATING NEW GAMES ==========
 #[derive(Debug, Deserialize)]
 pub struct CreateGame {
     pub match_id: String,
@@ -75,7 +102,7 @@ pub struct CreateGame {
     pub source: String,
 }
 
-// For updating game scores
+// ========== FOR UPDATING GAME SCORES ==========
 #[derive(Debug, Deserialize)]
 pub struct UpdateGameScore {
     pub match_id: String,
@@ -85,7 +112,7 @@ pub struct UpdateGameScore {
     pub is_live: Option<bool>,
 }
 
-// For live game updates
+// ========== FOR LIVE GAME UPDATES ==========
 #[derive(Debug, Deserialize)]
 pub struct LiveUpdate {
     pub match_id: String,
@@ -93,7 +120,7 @@ pub struct LiveUpdate {
     pub away_score: Option<i32>,
 }
 
-// For query parameters
+// ========== FOR QUERY PARAMETERS ==========
 #[derive(Debug, Deserialize)]
 pub struct GameQuery {
     pub status: Option<String>,
@@ -104,7 +131,7 @@ pub struct GameQuery {
     pub source: Option<String>,
 }
 
-// Response wrapper
+// ========== RESPONSE WRAPPERS ==========
 #[derive(Debug, Serialize)]
 pub struct ApiResponse<T> {
     pub success: bool,
@@ -112,7 +139,6 @@ pub struct ApiResponse<T> {
     pub message: Option<String>,
 }
 
-// For paginated responses
 #[derive(Debug, Serialize)]
 pub struct PaginatedGames {
     pub games: Vec<Game>,
@@ -121,7 +147,6 @@ pub struct PaginatedGames {
     pub limit: i64,
 }
 
-// For live games response
 #[derive(Debug, Serialize)]
 pub struct LiveGamesResponse {
     pub live_games: Vec<Game>,
@@ -129,7 +154,6 @@ pub struct LiveGamesResponse {
     pub last_updated: BsonDateTime,
 }
 
-// For game statistics
 #[derive(Debug, Serialize)]
 pub struct GameStats {
     pub total_games: i64,
@@ -148,13 +172,12 @@ pub struct LeagueStats {
     pub completed: i64,
 }
 
-// For bulk operations
+// ========== FOR BULK OPERATIONS ==========
 #[derive(Debug, Deserialize)]
 pub struct BulkGameUpdate {
     pub games: Vec<UpdateGameScore>,
 }
 
-// For game status updates
 #[derive(Debug, Deserialize)]
 pub struct GameStatusUpdate {
     pub match_id: String,
@@ -162,7 +185,7 @@ pub struct GameStatusUpdate {
     pub is_live: bool,
 }
 
-// Helper implementations
+// ========== HELPER IMPLEMENTATIONS ==========
 impl Game {
     pub fn is_upcoming(&self) -> bool {
         self.status == "upcoming"
@@ -189,5 +212,53 @@ impl Game {
         } else {
             format!("{} {}", self.date, self.time)
         }
+    }
+
+    // ========== NEW HELPER METHODS ==========
+
+    /// Get total vote count
+    pub fn total_votes(&self) -> i64 {
+        self.votes
+    }
+
+    /// Get total comment count
+    pub fn total_comments(&self) -> i64 {
+        self.comments
+    }
+
+    /// Check if a specific user has voted
+    pub fn has_user_voted(&self, user_id: &str) -> bool {
+        self.voters.iter().any(|v| v.user_id == user_id)
+    }
+
+    /// Get user's vote selection
+    pub fn get_user_vote(&self, user_id: &str) -> Option<String> {
+        self.voters
+            .iter()
+            .find(|v| v.user_id == user_id)
+            .map(|v| v.selection.clone())
+    }
+
+    /// Get vote counts by selection
+    pub fn get_vote_breakdown(&self) -> (i64, i64, i64) {
+        let home = self
+            .voters
+            .iter()
+            .filter(|v| v.selection == "home_team")
+            .count() as i64;
+        let draw = self.voters.iter().filter(|v| v.selection == "draw").count() as i64;
+        let away = self
+            .voters
+            .iter()
+            .filter(|v| v.selection == "away_team")
+            .count() as i64;
+        (home, draw, away)
+    }
+
+    /// Get recent voters (last N)
+    pub fn get_recent_voters(&self, limit: usize) -> Vec<&Voter> {
+        let mut sorted = self.voters.iter().collect::<Vec<_>>();
+        sorted.sort_by(|a, b| b.voted_at.cmp(&a.voted_at));
+        sorted.into_iter().take(limit).collect()
     }
 }

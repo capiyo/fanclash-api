@@ -1,12 +1,12 @@
 use axum::{
     extract::{Path, Query, State},
-    response::Json,
     http::HeaderMap,
+    response::Json,
 };
-use mongodb::bson::Bson;
 use axum_extra::extract::Multipart;
 use chrono::Utc;
 use futures_util::TryStreamExt;
+use mongodb::bson::Bson;
 use mongodb::bson::{doc, oid::ObjectId, Document};
 use mongodb::{options::FindOptions, Collection};
 use serde::{Deserialize, Serialize};
@@ -14,14 +14,45 @@ use serde_json::{json, Value as JsonValue};
 use uuid::Uuid;
 
 use crate::errors::{AppError, Result};
-use crate::models::posta::{Post, PostResponse, Comment, CommentResponse, PostType,
-    LikeRequest, CreateCommentRequest, UpdateCommentRequest};
+use crate::models::notification::FCMToken;
+use crate::models::posta::{
+    Comment, CommentResponse, CreateCommentRequest, LikeRequest, Post, PostResponse, PostType,
+    UpdateCommentRequest,
+};
 use crate::state::AppState;
 
 const MAX_FILE_SIZE: u64 = 10 * 1024 * 1024; // 10MB
 const ALLOWED_EXTENSIONS: [&str; 4] = ["jpg", "jpeg", "png", "gif"];
 const DEFAULT_PAGE_SIZE: i64 = 20;
 const MAX_PAGE_SIZE: i64 = 100;
+
+// Helper function to get all user IDs from fcm_tokens collection
+async fn get_all_user_ids(state: &AppState, exclude_user_id: Option<&str>) -> Vec<String> {
+    let tokens_collection: Collection<FCMToken> = state.db.collection("fcm_tokens");
+
+    match tokens_collection.distinct("user_id", doc! {}).await {
+        Ok(user_ids_bson) => {
+            let mut ids = Vec::new();
+            for user_id_bson in user_ids_bson {
+                if let Some(user_id_str) = user_id_bson.as_str() {
+                    if let Some(exclude) = exclude_user_id {
+                        if user_id_str != exclude {
+                            ids.push(user_id_str.to_string());
+                        }
+                    } else {
+                        ids.push(user_id_str.to_string());
+                    }
+                }
+            }
+            println!("📱 Found {} total users to notify", ids.len());
+            ids
+        }
+        Err(e) => {
+            eprintln!("❌ Error getting user IDs: {}", e);
+            Vec::new()
+        }
+    }
+}
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct PaginationParams {
@@ -117,14 +148,10 @@ pub async fn create_post(
     let mut image_data = None;
     let mut file_extension = None;
 
-    while let Some(field) = multipart
-        .next_field()
-        .await
-        .map_err(|e| {
-            log_error!("[{}] Failed to process multipart field: {}", request_id, e);
-            AppError::Multipart(format!("Failed to process multipart field: {}", e))
-        })?
-    {
+    while let Some(field) = multipart.next_field().await.map_err(|e| {
+        log_error!("[{}] Failed to process multipart field: {}", request_id, e);
+        AppError::Multipart(format!("Failed to process multipart field: {}", e))
+    })? {
         let field_name = field.name().unwrap_or("").to_string();
 
         match field_name.as_str() {
@@ -139,22 +166,16 @@ pub async fn create_post(
                 }
             }
             "userId" => {
-                user_id = field
-                    .text()
-                    .await
-                    .map_err(|e| {
-                        log_error!("[{}] Failed to read user_id: {}", request_id, e);
-                        AppError::Multipart(format!("Failed to read user_id: {}", e))
-                    })?;
+                user_id = field.text().await.map_err(|e| {
+                    log_error!("[{}] Failed to read user_id: {}", request_id, e);
+                    AppError::Multipart(format!("Failed to read user_id: {}", e))
+                })?;
             }
             "userName" => {
-                user_name = field
-                    .text()
-                    .await
-                    .map_err(|e| {
-                        log_error!("[{}] Failed to read user_name: {}", request_id, e);
-                        AppError::Multipart(format!("Failed to read user_name: {}", e))
-                    })?;
+                user_name = field.text().await.map_err(|e| {
+                    log_error!("[{}] Failed to read user_name: {}", request_id, e);
+                    AppError::Multipart(format!("Failed to read user_name: {}", e))
+                })?;
             }
             "image" => {
                 let file_name = field.file_name().unwrap_or("image").to_string();
@@ -189,7 +210,9 @@ pub async fn create_post(
     }
 
     if caption.is_none() && image_data.is_none() {
-        return Err(AppError::invalid_data("Please add a caption or select an image"));
+        return Err(AppError::invalid_data(
+            "Please add a caption or select an image",
+        ));
     }
 
     let collection: Collection<Post> = state.db.collection("posts");
@@ -201,34 +224,24 @@ pub async fn create_post(
         let upload_path = format!("fanclash/posts/{}", user_id);
 
         let (image_url, cloudinary_public_id) = match cloudinary_service
-            .upload_image_with_preset(
-                &image_data,
-                &upload_path,
-                Some(&public_id),
-            )
+            .upload_image_with_preset(&image_data, &upload_path, Some(&public_id))
             .await
         {
             Ok(result) => result,
-            Err(_) => {
-                cloudinary_service
-                    .upload_image_signed(
-                        &image_data,
-                        &upload_path,
-                        Some(&public_id),
-                    )
-                    .await
-                    .map_err(|e| {
-                        AppError::invalid_data(format!("Both upload methods failed. Last error: {}", e))
-                    })?
-            }
+            Err(_) => cloudinary_service
+                .upload_image_signed(&image_data, &upload_path, Some(&public_id))
+                .await
+                .map_err(|e| {
+                    AppError::invalid_data(format!("Both upload methods failed. Last error: {}", e))
+                })?,
         };
 
         match caption {
             Some(caption_text) => {
                 log_info!("[{}] Creating post with both image and caption", request_id);
                 Post::new_text_image_post(
-                    user_id,
-                    user_name,
+                    user_id.clone(),
+                    user_name.clone(),
                     caption_text,
                     image_url,
                     cloudinary_public_id,
@@ -238,8 +251,8 @@ pub async fn create_post(
             None => {
                 log_info!("[{}] Creating image-only post", request_id);
                 Post::new_image_post(
-                    user_id,
-                    user_name,
+                    user_id.clone(),
+                    user_name.clone(),
                     image_url,
                     cloudinary_public_id,
                     file_extension,
@@ -248,15 +261,67 @@ pub async fn create_post(
         }
     } else {
         log_info!("[{}] Creating text-only post", request_id);
-        Post::new_text_post(
-            user_id,
-            user_name,
-            caption.unwrap(),
-        )
+        Post::new_text_post(user_id.clone(), user_name.clone(), caption.unwrap())
     };
 
-    let _insert_result = collection.insert_one(&post).await?;
-    let post_response = PostResponse::from(post);
+    let insert_result = collection.insert_one(&post).await?;
+    let post_response = PostResponse::from(post.clone());
+
+    // ========== SEND FCM NOTIFICATIONS TO ALL USERS ==========
+    let state_clone = state.clone();
+    let user_id_clone = user_id.clone();
+    let user_name_clone = user_name.clone();
+    let caption_text = post
+        .caption
+        .clone()
+        .unwrap_or_else(|| "No caption".to_string());
+    let post_id_hex = insert_result
+        .inserted_id
+        .as_object_id()
+        .map(|id| id.to_hex())
+        .unwrap_or_default();
+
+    tokio::spawn(async move {
+        if let Ok(fcm_service) = crate::services::fcm_service::init_fcm_service().await {
+            let all_user_ids = get_all_user_ids(&state_clone, Some(&user_id_clone)).await;
+
+            let post_preview = if caption_text.len() > 50 {
+                format!("{}...", &caption_text[0..50])
+            } else {
+                caption_text.clone()
+            };
+
+            let has_image = post.image_url.is_some();
+
+            if !all_user_ids.is_empty() {
+                println!(
+                    "📱 Notifying ALL {} users about new post from {}",
+                    all_user_ids.len(),
+                    user_name_clone
+                );
+
+                let _ = fcm_service
+                    .send_to_multiple_users(
+                        &state_clone,
+                        all_user_ids,
+                        &format!("📱 New post from {}!", user_name_clone),
+                        &post_preview,
+                        serde_json::json!({
+                            "post_id": post_id_hex,
+                            "user_id": user_id_clone,
+                            "user_name": user_name_clone,
+                            "caption_preview": post_preview,
+                            "has_image": has_image,
+                            "type": "new_post",
+                            "timestamp": Utc::now().to_rfc3339(),
+                        }),
+                        "new_post",
+                    )
+                    .await;
+            }
+        }
+    });
+    // ========== END FCM NOTIFICATION ==========
 
     Ok(Json(json!({
         "success": true,
@@ -343,11 +408,21 @@ pub async fn get_posts(
         Utc::now().timestamp()
     };
 
-    let text_posts_count = collection.count_documents(doc! { "post_type": "Text" }).await?;
-    let image_posts_count = collection.count_documents(doc! { "post_type": "Image" }).await?;
-    let text_image_posts_count = collection.count_documents(doc! { "post_type": "TextAndImage" }).await?;
+    let text_posts_count = collection
+        .count_documents(doc! { "post_type": "Text" })
+        .await?;
+    let image_posts_count = collection
+        .count_documents(doc! { "post_type": "Image" })
+        .await?;
+    let text_image_posts_count = collection
+        .count_documents(doc! { "post_type": "TextAndImage" })
+        .await?;
 
-    log_info!("[{}] get_posts completed. Found {} posts", request_id, post_responses.len());
+    log_info!(
+        "[{}] get_posts completed. Found {} posts",
+        request_id,
+        post_responses.len()
+    );
 
     Ok(Json(json!({
         "success": true,
@@ -408,7 +483,10 @@ pub async fn search_posts(
 
     if let Some(start_date_str) = &params.start_date {
         if let Ok(start_date) = chrono::DateTime::parse_from_rfc3339(start_date_str) {
-            filter.insert("created_at", doc! { "$gte": start_date.with_timezone(&Utc) });
+            filter.insert(
+                "created_at",
+                doc! { "$gte": start_date.with_timezone(&Utc) },
+            );
         }
     }
 
@@ -462,18 +540,13 @@ pub async fn search_posts(
         }
     })))
 }
-//use crate::models::posta::PostType; // Make sure this is imported
 
-// Add this new handler
-pub async fn migrate_posts(
-    State(state): State<AppState>,
-) -> Result<Json<serde_json::Value>> {
+pub async fn migrate_posts(State(state): State<AppState>) -> Result<Json<serde_json::Value>> {
     let request_id = uuid::Uuid::new_v4();
     log_info!("[{}] Starting post migration", request_id);
 
     let collection: Collection<Post> = state.db.collection("posts");
 
-    // Find all posts without post_type
     let filter = doc! { "post_type": { "$exists": false } };
     let cursor = collection.find(filter.clone()).await?;
     let posts: Vec<Post> = cursor.try_collect().await?;
@@ -490,7 +563,6 @@ pub async fn migrate_posts(
             (false, false) => "Text",
         };
 
-        // Remove the unused variable or prefix with underscore
         let _post_type = match post_type_str {
             "Text" => PostType::Text,
             "Image" => PostType::Image,
@@ -498,28 +570,34 @@ pub async fn migrate_posts(
             _ => PostType::Text,
         };
 
-        // Update the document
         let update = doc! {
             "$set": { "post_type": post_type_str }
         };
 
         if let Some(id) = post._id {
-            let result = collection.update_one(
-                doc! { "_id": id },
-                update
-            ).await?;
+            let result = collection.update_one(doc! { "_id": id }, update).await?;
 
             if result.modified_count > 0 {
                 updated_count += 1;
-                log_info!("[{}] Updated post {} with type {}", request_id, id, post_type_str);
+                log_info!(
+                    "[{}] Updated post {} with type {}",
+                    request_id,
+                    id,
+                    post_type_str
+                );
             } else {
                 skipped_count += 1;
             }
         }
     }
 
-    log_info!("[{}] Migration complete. Updated: {}, Skipped: {}, Total: {}",
-        request_id, updated_count, skipped_count, total_posts);
+    log_info!(
+        "[{}] Migration complete. Updated: {}, Skipped: {}, Total: {}",
+        request_id,
+        updated_count,
+        skipped_count,
+        total_posts
+    );
 
     Ok(Json(json!({
         "success": true,
@@ -537,7 +615,11 @@ pub async fn get_post_by_id(
     Path(post_id): Path<String>,
 ) -> Result<Json<serde_json::Value>> {
     let request_id = uuid::Uuid::new_v4();
-    log_info!("[{}] Starting get_post_by_id handler. Post ID: {}", request_id, post_id);
+    log_info!(
+        "[{}] Starting get_post_by_id handler. Post ID: {}",
+        request_id,
+        post_id
+    );
 
     let collection: Collection<Post> = state.db.collection("posts");
 
@@ -565,7 +647,11 @@ pub async fn get_posts_by_user(
     Query(params): Query<PaginationParams>,
 ) -> Result<Json<serde_json::Value>> {
     let request_id = uuid::Uuid::new_v4();
-    log_info!("[{}] Starting get_posts_by_user handler. User ID: {}", request_id, user_id);
+    log_info!(
+        "[{}] Starting get_posts_by_user handler. User ID: {}",
+        request_id,
+        user_id
+    );
 
     let collection: Collection<Post> = state.db.collection("posts");
 
@@ -603,20 +689,26 @@ pub async fn get_posts_by_user(
 
     let post_responses: Vec<PostResponse> = posts.into_iter().map(PostResponse::from).collect();
 
-    let text_posts = collection.count_documents(doc! {
-        "user_id": &user_id,
-        "post_type": "Text"
-    }).await?;
+    let text_posts = collection
+        .count_documents(doc! {
+            "user_id": &user_id,
+            "post_type": "Text"
+        })
+        .await?;
 
-    let image_posts = collection.count_documents(doc! {
-        "user_id": &user_id,
-        "post_type": "Image"
-    }).await?;
+    let image_posts = collection
+        .count_documents(doc! {
+            "user_id": &user_id,
+            "post_type": "Image"
+        })
+        .await?;
 
-    let text_image_posts = collection.count_documents(doc! {
-        "user_id": &user_id,
-        "post_type": "TextAndImage"
-    }).await?;
+    let text_image_posts = collection
+        .count_documents(doc! {
+            "user_id": &user_id,
+            "post_type": "TextAndImage"
+        })
+        .await?;
 
     Ok(Json(json!({
         "success": true,
@@ -645,7 +737,11 @@ pub async fn update_post_caption(
     axum::extract::Json(payload): axum::extract::Json<UpdateCaptionRequest>,
 ) -> Result<Json<serde_json::Value>> {
     let request_id = uuid::Uuid::new_v4();
-    log_info!("[{}] Starting update_post_caption handler. Post ID: {}", request_id, post_id);
+    log_info!(
+        "[{}] Starting update_post_caption handler. Post ID: {}",
+        request_id,
+        post_id
+    );
 
     let collection: Collection<Post> = state.db.collection("posts");
 
@@ -681,7 +777,11 @@ pub async fn delete_post(
     Path(post_id): Path<String>,
 ) -> Result<Json<serde_json::Value>> {
     let request_id = uuid::Uuid::new_v4();
-    log_info!("[{}] Starting delete_post handler. Post ID: {}", request_id, post_id);
+    log_info!(
+        "[{}] Starting delete_post handler. Post ID: {}",
+        request_id,
+        post_id
+    );
 
     let collection: Collection<Post> = state.db.collection("posts");
 
@@ -722,7 +822,11 @@ pub async fn delete_posts_by_user(
     Path(user_id): Path<String>,
 ) -> Result<Json<serde_json::Value>> {
     let request_id = uuid::Uuid::new_v4();
-    log_info!("[{}] Starting delete_posts_by_user handler. User ID: {}", request_id, user_id);
+    log_info!(
+        "[{}] Starting delete_posts_by_user handler. User ID: {}",
+        request_id,
+        user_id
+    );
 
     let collection: Collection<Post> = state.db.collection("posts");
 
@@ -767,8 +871,13 @@ pub async fn get_post_thumbnail(
     Path((post_id, width, height)): Path<(String, u32, u32)>,
 ) -> Result<Json<serde_json::Value>> {
     let request_id = uuid::Uuid::new_v4();
-    log_info!("[{}] Starting get_post_thumbnail handler. Post ID: {}, Dimensions: {}x{}",
-        request_id, post_id, width, height);
+    log_info!(
+        "[{}] Starting get_post_thumbnail handler. Post ID: {}, Dimensions: {}x{}",
+        request_id,
+        post_id,
+        width,
+        height
+    );
 
     let collection: Collection<Post> = state.db.collection("posts");
 
@@ -812,8 +921,12 @@ pub async fn get_post_with_transform(
     Path((post_id, transformations)): Path<(String, String)>,
 ) -> Result<Json<serde_json::Value>> {
     let request_id = uuid::Uuid::new_v4();
-    log_info!("[{}] Starting get_post_with_transform handler. Post ID: {}, Transformations: {}",
-        request_id, post_id, transformations);
+    log_info!(
+        "[{}] Starting get_post_with_transform handler. Post ID: {}, Transformations: {}",
+        request_id,
+        post_id,
+        transformations
+    );
 
     let collection: Collection<Post> = state.db.collection("posts");
 
@@ -846,9 +959,7 @@ pub async fn get_post_with_transform(
     })))
 }
 
-pub async fn get_post_stats(
-    State(state): State<AppState>,
-) -> Result<Json<serde_json::Value>> {
+pub async fn get_post_stats(State(state): State<AppState>) -> Result<Json<serde_json::Value>> {
     let request_id = uuid::Uuid::new_v4();
     log_info!("[{}] Starting get_post_stats handler", request_id);
 
@@ -856,9 +967,15 @@ pub async fn get_post_stats(
 
     let total_posts: u64 = collection.count_documents(doc! {}).await?;
 
-    let text_posts = collection.count_documents(doc! { "post_type": "Text" }).await?;
-    let image_posts = collection.count_documents(doc! { "post_type": "Image" }).await?;
-    let text_image_posts = collection.count_documents(doc! { "post_type": "TextAndImage" }).await?;
+    let text_posts = collection
+        .count_documents(doc! { "post_type": "Text" })
+        .await?;
+    let image_posts = collection
+        .count_documents(doc! { "post_type": "Image" })
+        .await?;
+    let text_image_posts = collection
+        .count_documents(doc! { "post_type": "TextAndImage" })
+        .await?;
 
     let seven_days_ago = Utc::now() - chrono::Duration::days(7);
     let posts_last_week: u64 = collection
@@ -918,7 +1035,11 @@ pub async fn get_user_post_stats(
     Path(user_id): Path<String>,
 ) -> Result<Json<serde_json::Value>> {
     let request_id = uuid::Uuid::new_v4();
-    log_info!("[{}] Starting get_user_post_stats handler. User ID: {}", request_id, user_id);
+    log_info!(
+        "[{}] Starting get_user_post_stats handler. User ID: {}",
+        request_id,
+        user_id
+    );
 
     let collection: Collection<Post> = state.db.collection("posts");
 
@@ -926,20 +1047,26 @@ pub async fn get_user_post_stats(
 
     let total_posts: u64 = collection.count_documents(filter.clone()).await?;
 
-    let text_posts = collection.count_documents(doc! {
-        "user_id": &user_id,
-        "post_type": "Text"
-    }).await?;
+    let text_posts = collection
+        .count_documents(doc! {
+            "user_id": &user_id,
+            "post_type": "Text"
+        })
+        .await?;
 
-    let image_posts = collection.count_documents(doc! {
-        "user_id": &user_id,
-        "post_type": "Image"
-    }).await?;
+    let image_posts = collection
+        .count_documents(doc! {
+            "user_id": &user_id,
+            "post_type": "Image"
+        })
+        .await?;
 
-    let text_image_posts = collection.count_documents(doc! {
-        "user_id": &user_id,
-        "post_type": "TextAndImage"
-    }).await?;
+    let text_image_posts = collection
+        .count_documents(doc! {
+            "user_id": &user_id,
+            "post_type": "TextAndImage"
+        })
+        .await?;
 
     let latest_post = collection
         .find_one(filter.clone())
@@ -994,8 +1121,12 @@ pub async fn like_post(
     Json(payload): Json<LikeRequest>,
 ) -> Result<Json<serde_json::Value>> {
     let request_id = uuid::Uuid::new_v4();
-    log_info!("[{}] Starting like_post handler. Post ID: {}, User ID: {}",
-        request_id, post_id, payload.user_id);
+    log_info!(
+        "[{}] Starting like_post handler. Post ID: {}, User ID: {}",
+        request_id,
+        post_id,
+        payload.user_id
+    );
 
     let collection: Collection<Post> = state.db.collection("posts");
 
@@ -1034,40 +1165,45 @@ pub async fn like_post(
         return Err(AppError::PostNotFound);
     }
 
-    // In the like_post handler, around line 1020-1060
     match collection.find_one(doc! { "_id": object_id }).await? {
         Some(updated_post) => {
-            // ========== SEND FCM NOTIFICATION TO POST OWNER ==========
-            // Don't notify if liking own post
-            if updated_post.user_id != payload.user_id {
-                let state_clone = state.clone();  // ← ADD THIS LINE
-                let post_owner_id = updated_post.user_id.clone();
-                let liker_name = payload.user_name.clone();
-                let post_id_clone = post_id.clone();
-                let likes_count = updated_post.likes_count;
+            // ========== SEND FCM NOTIFICATION TO ALL USERS ==========
+            let state_clone = state.clone();
+            let post_owner_id = updated_post.user_id.clone();
+            let liker_name = payload.user_name.clone();
+            let post_id_clone = post_id.clone();
+            let likes_count = updated_post.likes_count;
 
-                tokio::spawn(async move {
-                    log_info!("📱 Sending push notification to post owner: {}", post_owner_id);
+            tokio::spawn(async move {
+                if let Ok(fcm_service) = crate::services::fcm_service::init_fcm_service().await {
+                    let all_user_ids = get_all_user_ids(&state_clone, Some(&payload.user_id)).await;
 
-                    if let Ok(fcm_service) = crate::services::fcm_service::init_fcm_service().await {
-                        let _ = fcm_service.send_to_user(
-                            &state_clone,  // Now state_clone is defined
-                            &post_owner_id,
-                            &format!("❤️ {} liked your post", liker_name),
-                            &format!("Now {} people like this post", likes_count),
-                            serde_json::json!({
-                                "post_id": post_id_clone,
-                                "liker_id": payload.user_id,
-                                "liker_name": liker_name,
-                                "likes_count": likes_count,
-                                "type": "post_like",
-                                "timestamp": Utc::now().to_rfc3339(),
-                            }),
-                            "post_like"
-                        ).await;
+                    if !all_user_ids.is_empty() {
+                        println!(
+                            "📱 Notifying ALL {} users about like on post",
+                            all_user_ids.len()
+                        );
+
+                        let _ = fcm_service
+                            .send_to_multiple_users(
+                                &state_clone,
+                                all_user_ids,
+                                &format!("❤️ {} liked a post", liker_name),
+                                &format!("Now {} people like this post", likes_count),
+                                serde_json::json!({
+                                    "post_id": post_id_clone,
+                                    "liker_id": payload.user_id,
+                                    "liker_name": liker_name,
+                                    "likes_count": likes_count,
+                                    "type": "post_like",
+                                    "timestamp": Utc::now().to_rfc3339(),
+                                }),
+                                "post_like",
+                            )
+                            .await;
                     }
-                });
-            }
+                }
+            });
             // ========== END FCM NOTIFICATION ==========
 
             let post_response = PostResponse::from(updated_post);
@@ -1081,72 +1217,18 @@ pub async fn like_post(
     }
 }
 
-pub async fn unlike_comment(
-    State(state): State<AppState>,
-    Path(comment_id): Path<String>,
-    Json(payload): Json<LikeRequest>,
-) -> Result<Json<serde_json::Value>> {
-    let request_id = uuid::Uuid::new_v4();
-    log_info!("[{}] Starting unlike_comment handler. Comment ID: {}, User ID: {}",
-        request_id, comment_id, payload.user_id);
-
-    let collection: Collection<Comment> = state.db.collection("comments");
-
-    let object_id = match ObjectId::parse_str(&comment_id) {
-        Ok(oid) => oid,
-        Err(_) => return Err(AppError::invalid_data("Invalid comment ID")),
-    };
-
-    let comment = match collection.find_one(doc! { "_id": object_id }).await? {
-        Some(comment) => comment,
-        None => return Err(AppError::invalid_data("Comment not found")),
-    };
-
-    if !comment.liked_by.contains(&payload.user_id) {
-        let comment_response = CommentResponse::from(comment);
-        return Ok(Json(json!({
-            "success": true,
-            "message": "Comment not liked by user",
-            "comment": comment_response
-        })));
-    }
-
-    let filter = doc! { "_id": object_id };
-    let update = doc! {
-        "$inc": { "likes_count": -1 },
-        "$pull": { "liked_by": &payload.user_id },
-        "$set": {
-            "updated_at": Utc::now(),
-            "last_modified": Utc::now()
-        }
-    };
-
-    let result = collection.update_one(filter, update).await?;
-
-    if result.matched_count == 0 {
-        return Err(AppError::invalid_data("Comment not found"));
-    }
-
-    match collection.find_one(doc! { "_id": object_id }).await? {
-        Some(updated_comment) => {
-            let comment_response = CommentResponse::from(updated_comment);
-            Ok(Json(json!({
-                "success": true,
-                "message": "Comment unliked successfully",
-                "comment": comment_response
-            })))
-        }
-        None => Err(AppError::invalid_data("Comment not found after update")),
-    }
-}
 pub async fn unlike_post(
     State(state): State<AppState>,
     Path(post_id): Path<String>,
     Json(payload): Json<LikeRequest>,
 ) -> Result<Json<serde_json::Value>> {
     let request_id = uuid::Uuid::new_v4();
-    log_info!("[{}] Starting unlike_post handler. Post ID: {}, User ID: {}",
-        request_id, post_id, payload.user_id);
+    log_info!(
+        "[{}] Starting unlike_post handler. Post ID: {}, User ID: {}",
+        request_id,
+        post_id,
+        payload.user_id
+    );
 
     let collection: Collection<Post> = state.db.collection("posts");
 
@@ -1205,7 +1287,11 @@ pub async fn get_comments(
     Query(params): Query<PaginationParams>,
 ) -> Result<Json<serde_json::Value>> {
     let request_id = uuid::Uuid::new_v4();
-    log_info!("[{}] Starting get_comments handler. Post ID: {}", request_id, post_id);
+    log_info!(
+        "[{}] Starting get_comments handler. Post ID: {}",
+        request_id,
+        post_id
+    );
 
     let collection: Collection<Comment> = state.db.collection("comments");
 
@@ -1217,7 +1303,9 @@ pub async fn get_comments(
         .max(1);
     let skip = (page - 1) * limit;
 
-    let total_count = collection.count_documents(doc! { "post_id": &post_id }).await? as i64;
+    let total_count = collection
+        .count_documents(doc! { "post_id": &post_id })
+        .await? as i64;
     let total_pages = (total_count as f64 / limit as f64).ceil() as i64;
 
     let options = FindOptions::builder()
@@ -1226,10 +1314,14 @@ pub async fn get_comments(
         .limit(limit)
         .build();
 
-    let cursor = collection.find(doc! { "post_id": &post_id }).with_options(options).await?;
+    let cursor = collection
+        .find(doc! { "post_id": &post_id })
+        .with_options(options)
+        .await?;
     let comments: Vec<Comment> = cursor.try_collect().await?;
 
-    let comment_responses: Vec<CommentResponse> = comments.into_iter().map(CommentResponse::from).collect();
+    let comment_responses: Vec<CommentResponse> =
+        comments.into_iter().map(CommentResponse::from).collect();
 
     Ok(Json(json!({
         "success": true,
@@ -1252,8 +1344,12 @@ pub async fn create_comment(
     Json(payload): Json<CreateCommentRequest>,
 ) -> Result<Json<serde_json::Value>> {
     let request_id = uuid::Uuid::new_v4();
-    log_info!("[{}] Starting create_comment handler. Post ID: {}, User ID: {}",
-        request_id, post_id, payload.user_id);
+    log_info!(
+        "[{}] Starting create_comment handler. Post ID: {}, User ID: {}",
+        request_id,
+        post_id,
+        payload.user_id
+    );
 
     if payload.comment.trim().is_empty() {
         return Err(AppError::invalid_data("Comment cannot be empty"));
@@ -1267,20 +1363,25 @@ pub async fn create_comment(
         Err(_) => return Err(AppError::PostNotFound),
     };
 
-    let post = match post_collection.find_one(doc! { "_id": post_object_id }).await? {
+    let post = match post_collection
+        .find_one(doc! { "_id": post_object_id })
+        .await?
+    {
         Some(post) => post,
         None => return Err(AppError::PostNotFound),
     };
 
-    let existing_comment = comment_collection.find_one(
-        doc! {
+    let existing_comment = comment_collection
+        .find_one(doc! {
             "post_id": &post_id,
             "user_id": &payload.user_id
-        }
-    ).await?;
+        })
+        .await?;
 
     if existing_comment.is_some() {
-        return Err(AppError::invalid_data("You have already commented on this post. You can edit your existing comment."));
+        return Err(AppError::invalid_data(
+            "You have already commented on this post. You can edit your existing comment.",
+        ));
     }
 
     let comment = Comment::new(
@@ -1293,56 +1394,63 @@ pub async fn create_comment(
     let insert_result = comment_collection.insert_one(&comment).await?;
 
     if let Some(comment_id) = insert_result.inserted_id.as_object_id() {
-        let _ = post_collection.update_one(
-            doc! { "_id": post_object_id },
-            doc! {
-                "$inc": { "comments_count": 1 },
-                "$set": {
-                    "updated_at": Utc::now(),
-                    "last_modified": Utc::now()
+        let _ = post_collection
+            .update_one(
+                doc! { "_id": post_object_id },
+                doc! {
+                    "$inc": { "comments_count": 1 },
+                    "$set": {
+                        "updated_at": Utc::now(),
+                        "last_modified": Utc::now()
+                    }
+                },
+            )
+            .await;
+
+        // ========== SEND FCM NOTIFICATION TO ALL USERS ==========
+        let state_clone = state.clone();
+        let commenter_name = payload.user_name.clone();
+        let comment_text = payload.comment.clone();
+        let post_id_clone = post_id.clone();
+        let comment_id_hex = comment_id.to_hex();
+
+        tokio::spawn(async move {
+            if let Ok(fcm_service) = crate::services::fcm_service::init_fcm_service().await {
+                let all_user_ids = get_all_user_ids(&state_clone, Some(&payload.user_id)).await;
+
+                let comment_preview = if comment_text.len() > 100 {
+                    format!("{}...", &comment_text[0..100])
+                } else {
+                    comment_text.clone()
+                };
+
+                if !all_user_ids.is_empty() {
+                    println!(
+                        "📱 Notifying ALL {} users about new comment",
+                        all_user_ids.len()
+                    );
+
+                    let _ = fcm_service
+                        .send_to_multiple_users(
+                            &state_clone,
+                            all_user_ids,
+                            &format!("💬 {} commented on a post", commenter_name),
+                            &comment_preview,
+                            serde_json::json!({
+                                "post_id": post_id_clone,
+                                "comment_id": comment_id_hex,
+                                "commenter_id": payload.user_id,
+                                "commenter_name": commenter_name,
+                                "comment_preview": comment_preview,
+                                "type": "post_comment",
+                                "timestamp": Utc::now().to_rfc3339(),
+                            }),
+                            "post_comment",
+                        )
+                        .await;
                 }
             }
-        ).await;
-
-        // ========== SEND FCM NOTIFICATION TO POST OWNER ==========
-        // Don't notify if commenting on own post
-        if post.user_id != payload.user_id {
-            let state_clone = state.clone();
-            let post_owner_id = post.user_id.clone();
-            let commenter_name = payload.user_name.clone();
-            let comment_text = payload.comment.clone();
-            let post_id_clone = post_id.clone();
-            let comment_id_hex = comment_id.to_hex();
-
-            tokio::spawn(async move {
-                log_info!("📱 Sending push notification to post owner: {}", post_owner_id);
-
-                if let Ok(fcm_service) = crate::services::fcm_service::init_fcm_service().await {
-                    let comment_preview = if comment_text.len() > 100 {
-                        format!("{}...", &comment_text[0..100])
-                    } else {
-                        comment_text.clone()
-                    };
-
-                    let _ = fcm_service.send_to_user(
-                        &state_clone,
-                        &post_owner_id,
-                        &format!("💬 {} commented on your post", commenter_name),
-                        &comment_preview,
-                        serde_json::json!({
-                            "post_id": post_id_clone,
-                            "comment_id": comment_id_hex,
-                            "commenter_id": payload.user_id,
-                            "commenter_name": commenter_name,
-                            "comment_preview": comment_preview,
-                            "type": "post_comment",
-                            "timestamp": Utc::now().to_rfc3339(),
-                        }),
-                        "post_comment"
-                    ).await;
-                }
-            });
-        }
+        });
         // ========== END FCM NOTIFICATION ==========
 
         let comment_response = CommentResponse::from(comment);
@@ -1363,8 +1471,12 @@ pub async fn update_comment(
     Json(payload): Json<UpdateCommentRequest>,
 ) -> Result<Json<serde_json::Value>> {
     let request_id = uuid::Uuid::new_v4();
-    log_info!("[{}] Starting update_comment handler. Comment ID: {}, User ID: {}",
-        request_id, comment_id, payload.user_id);
+    log_info!(
+        "[{}] Starting update_comment handler. Comment ID: {}, User ID: {}",
+        request_id,
+        comment_id,
+        payload.user_id
+    );
 
     if payload.comment.trim().is_empty() {
         return Err(AppError::invalid_data("Comment cannot be empty"));
@@ -1383,7 +1495,9 @@ pub async fn update_comment(
     };
 
     if comment.user_id != payload.user_id {
-        return Err(AppError::invalid_data("You can only edit your own comments"));
+        return Err(AppError::invalid_data(
+            "You can only edit your own comments",
+        ));
     }
 
     let filter = doc! { "_id": object_id };
@@ -1420,8 +1534,12 @@ pub async fn delete_comment(
     Json(payload): Json<LikeRequest>,
 ) -> Result<Json<serde_json::Value>> {
     let request_id = uuid::Uuid::new_v4();
-    log_info!("[{}] Starting delete_comment handler. Comment ID: {}, User ID: {}",
-        request_id, comment_id, payload.user_id);
+    log_info!(
+        "[{}] Starting delete_comment handler. Comment ID: {}, User ID: {}",
+        request_id,
+        comment_id,
+        payload.user_id
+    );
 
     let comment_collection: Collection<Comment> = state.db.collection("comments");
 
@@ -1430,32 +1548,41 @@ pub async fn delete_comment(
         Err(_) => return Err(AppError::invalid_data("Invalid comment ID")),
     };
 
-    let comment = match comment_collection.find_one(doc! { "_id": object_id }).await? {
+    let comment = match comment_collection
+        .find_one(doc! { "_id": object_id })
+        .await?
+    {
         Some(comment) => comment,
         None => return Err(AppError::invalid_data("Comment not found")),
     };
 
     if comment.user_id != payload.user_id {
-        return Err(AppError::invalid_data("You can only delete your own comments"));
+        return Err(AppError::invalid_data(
+            "You can only delete your own comments",
+        ));
     }
 
-    let result = comment_collection.delete_one(doc! { "_id": object_id }).await?;
+    let result = comment_collection
+        .delete_one(doc! { "_id": object_id })
+        .await?;
 
     if result.deleted_count > 0 {
         let post_object_id = ObjectId::parse_str(&comment.post_id);
 
         if let Ok(post_id) = post_object_id {
             let post_collection: Collection<Post> = state.db.collection("posts");
-            let _ = post_collection.update_one(
-                doc! { "_id": post_id },
-                doc! {
-                    "$inc": { "comments_count": -1 },
-                    "$set": {
-                        "updated_at": Utc::now(),
-                        "last_modified": Utc::now()
-                    }
-                }
-            ).await;
+            let _ = post_collection
+                .update_one(
+                    doc! { "_id": post_id },
+                    doc! {
+                        "$inc": { "comments_count": -1 },
+                        "$set": {
+                            "updated_at": Utc::now(),
+                            "last_modified": Utc::now()
+                        }
+                    },
+                )
+                .await;
         }
 
         Ok(Json(json!({
@@ -1474,8 +1601,12 @@ pub async fn like_comment(
     Json(payload): Json<LikeRequest>,
 ) -> Result<Json<serde_json::Value>> {
     let request_id = uuid::Uuid::new_v4();
-    log_info!("[{}] Starting like_comment handler. Comment ID: {}, User ID: {}",
-        request_id, comment_id, payload.user_id);
+    log_info!(
+        "[{}] Starting like_comment handler. Comment ID: {}, User ID: {}",
+        request_id,
+        comment_id,
+        payload.user_id
+    );
 
     let collection: Collection<Comment> = state.db.collection("comments");
 
@@ -1516,37 +1647,43 @@ pub async fn like_comment(
 
     match collection.find_one(doc! { "_id": object_id }).await? {
         Some(updated_comment) => {
-            // ========== SEND FCM NOTIFICATION TO COMMENT AUTHOR ==========
-            // Don't notify if liking own comment
-            if updated_comment.user_id != payload.user_id {
-                let state_clone = state.clone();
-                let liker_name = "Someone".to_string();
-                let comment_author_id = updated_comment.user_id.clone();
+            // ========== SEND FCM NOTIFICATION TO ALL USERS ==========
+            let state_clone = state.clone();
+            let liker_name = payload.user_name.clone();
+            let comment_author_id = updated_comment.user_id.clone();
+            let post_id_clone = updated_comment.post_id.clone();
 
-                let post_id_clone = updated_comment.post_id.clone();
+            tokio::spawn(async move {
+                if let Ok(fcm_service) = crate::services::fcm_service::init_fcm_service().await {
+                    let all_user_ids = get_all_user_ids(&state_clone, Some(&payload.user_id)).await;
 
-                tokio::spawn(async move {
-                    log_info!("📱 Sending push notification to comment author: {}", comment_author_id);
+                    if !all_user_ids.is_empty() {
+                        println!(
+                            "📱 Notifying ALL {} users about comment like",
+                            all_user_ids.len()
+                        );
 
-                    if let Ok(fcm_service) = crate::services::fcm_service::init_fcm_service().await {
-                        let _ = fcm_service.send_to_user(
-                            &state_clone,
-                            &comment_author_id,
-                            &format!("❤️ {} liked your comment", liker_name),
-                            &format!("On a post"),
-                            serde_json::json!({
-                                "post_id": post_id_clone,
-                                "comment_id": comment_id,
-                                "liker_id": payload.user_id,
-                                "liker_name": liker_name,
-                                "type": "comment_like",
-                                "timestamp": Utc::now().to_rfc3339(),
-                            }),
-                            "comment_like"
-                        ).await;
+                        let _ = fcm_service
+                            .send_to_multiple_users(
+                                &state_clone,
+                                all_user_ids,
+                                &format!("❤️ {} liked a comment", liker_name),
+                                "On a post",
+                                serde_json::json!({
+                                    "post_id": post_id_clone,
+                                    "comment_id": comment_id,
+                                    "liker_id": payload.user_id,
+                                    "liker_name": liker_name,
+                                    "comment_author_id": comment_author_id,
+                                    "type": "comment_like",
+                                    "timestamp": Utc::now().to_rfc3339(),
+                                }),
+                                "comment_like",
+                            )
+                            .await;
                     }
-                });
-            }
+                }
+            });
             // ========== END FCM NOTIFICATION ==========
 
             let comment_response = CommentResponse::from(updated_comment);
@@ -1559,6 +1696,66 @@ pub async fn like_comment(
         None => Err(AppError::invalid_data("Comment not found after update")),
     }
 }
-// Make sure this is imported
 
-// Add this new handler
+pub async fn unlike_comment(
+    State(state): State<AppState>,
+    Path(comment_id): Path<String>,
+    Json(payload): Json<LikeRequest>,
+) -> Result<Json<serde_json::Value>> {
+    let request_id = uuid::Uuid::new_v4();
+    log_info!(
+        "[{}] Starting unlike_comment handler. Comment ID: {}, User ID: {}",
+        request_id,
+        comment_id,
+        payload.user_id
+    );
+
+    let collection: Collection<Comment> = state.db.collection("comments");
+
+    let object_id = match ObjectId::parse_str(&comment_id) {
+        Ok(oid) => oid,
+        Err(_) => return Err(AppError::invalid_data("Invalid comment ID")),
+    };
+
+    let comment = match collection.find_one(doc! { "_id": object_id }).await? {
+        Some(comment) => comment,
+        None => return Err(AppError::invalid_data("Comment not found")),
+    };
+
+    if !comment.liked_by.contains(&payload.user_id) {
+        let comment_response = CommentResponse::from(comment);
+        return Ok(Json(json!({
+            "success": true,
+            "message": "Comment not liked by user",
+            "comment": comment_response
+        })));
+    }
+
+    let filter = doc! { "_id": object_id };
+    let update = doc! {
+        "$inc": { "likes_count": -1 },
+        "$pull": { "liked_by": &payload.user_id },
+        "$set": {
+            "updated_at": Utc::now(),
+            "last_modified": Utc::now()
+        }
+    };
+
+    let result = collection.update_one(filter, update).await?;
+
+    if result.matched_count == 0 {
+        return Err(AppError::invalid_data("Comment not found"));
+    }
+
+    match collection.find_one(doc! { "_id": object_id }).await? {
+        Some(updated_comment) => {
+            let comment_response = CommentResponse::from(updated_comment);
+            Ok(Json(json!({
+                "success": true,
+                "message": "Comment unliked successfully",
+                "comment": comment_response
+            })))
+        }
+        None => Err(AppError::invalid_data("Comment not found after update")),
+    }
+}

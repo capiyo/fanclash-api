@@ -7,6 +7,7 @@ use futures_util::TryStreamExt;
 use mongodb::bson::{doc, DateTime as BsonDateTime};
 use mongodb::Collection;
 use serde::Deserialize;
+use serde_json::json;
 
 use crate::errors::{AppError, Result};
 use crate::models::game::{Game, GameQuery as ModelGameQuery, LiveGamesResponse, LiveUpdate};
@@ -333,4 +334,254 @@ pub async fn update_game_status(
         Some(game) => Ok(Json(game)),
         None => Err(AppError::DocumentNotFound),
     }
+}
+
+// ========== FAST VOTE COUNT ENDPOINT ==========
+// This reads the vote count directly from the games collection counter
+// No need to count millions of vote documents!
+
+pub async fn get_fixture_vote_count_fast(
+    State(state): State<AppState>,
+    Path(fixture_id): Path<String>,
+) -> Result<Json<serde_json::Value>> {
+    println!("📊 Getting vote count for fixture: {} (FAST)", fixture_id);
+
+    let games_collection: Collection<Game> = state.db.collection("games");
+    let filter = doc! { "match_id": &fixture_id };
+
+    let game = games_collection
+        .find_one(filter)
+        .await?
+        .ok_or_else(|| AppError::DocumentNotFound)?;
+
+    let response = json!({
+        "success": true,
+        "fixture_id": fixture_id,
+        "votes": game.votes,
+        "timestamp": Utc::now().to_rfc3339(),
+    });
+
+    println!(
+        "✅ Fixture {} has {} votes (from counter)",
+        fixture_id, game.votes
+    );
+    Ok(Json(response))
+}
+
+// ========== FAST COMMENT COUNT ENDPOINT ==========
+// This reads the comment count directly from the games collection counter
+
+pub async fn get_fixture_comment_count_fast(
+    State(state): State<AppState>,
+    Path(fixture_id): Path<String>,
+) -> Result<Json<serde_json::Value>> {
+    println!(
+        "📊 Getting comment count for fixture: {} (FAST)",
+        fixture_id
+    );
+
+    let games_collection: Collection<Game> = state.db.collection("games");
+    let filter = doc! { "match_id": &fixture_id };
+
+    let game = games_collection
+        .find_one(filter)
+        .await?
+        .ok_or_else(|| AppError::DocumentNotFound)?;
+
+    let response = json!({
+        "success": true,
+        "fixture_id": fixture_id,
+        "comments": game.comments,
+        "timestamp": Utc::now().to_rfc3339(),
+    });
+
+    println!(
+        "✅ Fixture {} has {} comments (from counter)",
+        fixture_id, game.comments
+    );
+    Ok(Json(response))
+}
+
+// ========== FAST BOTH COUNTS ENDPOINT ==========
+// Returns both vote and comment counts in one request
+
+pub async fn get_fixture_counts_fast(
+    State(state): State<AppState>,
+    Path(fixture_id): Path<String>,
+) -> Result<Json<serde_json::Value>> {
+    println!(
+        "📊 Getting vote and comment counts for fixture: {} (FAST)",
+        fixture_id
+    );
+
+    let games_collection: Collection<Game> = state.db.collection("games");
+    let filter = doc! { "match_id": &fixture_id };
+
+    let game = games_collection
+        .find_one(filter)
+        .await?
+        .ok_or_else(|| AppError::DocumentNotFound)?;
+
+    let response = json!({
+        "success": true,
+        "fixture_id": fixture_id,
+        "votes": game.votes,
+        "comments": game.comments,
+        "timestamp": Utc::now().to_rfc3339(),
+    });
+
+    println!(
+        "✅ Fixture {} has {} votes and {} comments",
+        fixture_id, game.votes, game.comments
+    );
+    Ok(Json(response))
+}
+
+// ========== BATCH FAST COUNTS ENDPOINT ==========
+// Get counts for multiple fixtures at once
+
+// ========== GET ALL VOTERS FOR A FIXTURE (FOR VOTERS MODAL) ==========
+
+pub async fn get_fixture_voters_fast(
+    State(state): State<AppState>,
+    Path(fixture_id): Path<String>,
+) -> Result<Json<serde_json::Value>> {
+    println!("📊 Getting voters for fixture: {} (FAST)", fixture_id);
+
+    let games_collection: Collection<Game> = state.db.collection("games");
+    let filter = doc! { "match_id": &fixture_id };
+
+    let game = games_collection
+        .find_one(filter)
+        .await?
+        .ok_or_else(|| AppError::DocumentNotFound)?;
+
+    // Format voters for frontend
+    let voters: Vec<serde_json::Value> = game
+        .voters
+        .into_iter()
+        .map(|v| {
+            json!({
+                "userId": v.user_id,
+                "userName": v.user_name,
+                "selection": v.selection,
+                "votedAt": v.voted_at.to_chrono().to_rfc3339(),
+            })
+        })
+        .collect();
+
+    // Calculate vote breakdown
+    let home_votes = voters
+        .iter()
+        .filter(|v| v["selection"] == "home_team")
+        .count();
+    let draw_votes = voters.iter().filter(|v| v["selection"] == "draw").count();
+    let away_votes = voters
+        .iter()
+        .filter(|v| v["selection"] == "away_team")
+        .count();
+
+    let response = json!({
+        "success": true,
+        "fixture_id": fixture_id,
+        "home_team": game.home_team,
+        "away_team": game.away_team,
+        "total_votes": game.votes,
+        "voters": voters,
+        "breakdown": {
+            "home": home_votes,
+            "draw": draw_votes,
+            "away": away_votes,
+        },
+        "timestamp": Utc::now().to_rfc3339(),
+    });
+
+    println!(
+        "✅ Returning {} voters for fixture {}",
+        voters.len(),
+        fixture_id
+    );
+    Ok(Json(response))
+}
+
+// ========== CHECK IF USER HAS VOTED (FAST) ==========
+
+pub async fn check_user_voted_fast(
+    State(state): State<AppState>,
+    Path((fixture_id, user_id)): Path<(String, String)>,
+) -> Result<Json<serde_json::Value>> {
+    println!(
+        "🔍 Checking if user {} voted for fixture {}",
+        user_id, fixture_id
+    );
+
+    let games_collection: Collection<Game> = state.db.collection("games");
+    let filter = doc! {
+        "match_id": &fixture_id,
+        "voters.userId": &user_id
+    };
+
+    let game = games_collection.find_one(filter).await?;
+
+    let has_voted = game.is_some();
+    let selection = if let Some(game) = game {
+        game.voters
+            .iter()
+            .find(|v| v.user_id == user_id)
+            .map(|v| v.selection.clone())
+    } else {
+        None
+    };
+
+    let response = json!({
+        "success": true,
+        "fixture_id": fixture_id,
+        "user_id": user_id,
+        "has_voted": has_voted,
+        "selection": selection,
+    });
+
+    Ok(Json(response))
+}
+
+pub async fn get_batch_fixture_counts_fast(
+    State(state): State<AppState>,
+    Json(fixture_ids): Json<Vec<String>>,
+) -> Result<Json<serde_json::Value>> {
+    println!(
+        "📊 Getting batch counts for {} fixtures (FAST)",
+        fixture_ids.len()
+    );
+
+    let games_collection: Collection<Game> = state.db.collection("games");
+    let mut results = Vec::new();
+
+    for fixture_id in fixture_ids {
+        let filter = doc! { "match_id": &fixture_id };
+
+        if let Some(game) = games_collection.find_one(filter).await? {
+            results.push(json!({
+                "fixture_id": fixture_id,
+                "votes": game.votes,
+                "comments": game.comments,
+            }));
+        } else {
+            results.push(json!({
+                "fixture_id": fixture_id,
+                "votes": 0,
+                "comments": 0,
+                "error": "Fixture not found"
+            }));
+        }
+    }
+
+    let response = json!({
+        "success": true,
+        "count": results.len(),
+        "data": results,
+        "timestamp": Utc::now().to_rfc3339(),
+    });
+
+    println!("✅ Returning batch counts for {} fixtures", results.len());
+    Ok(Json(response))
 }
