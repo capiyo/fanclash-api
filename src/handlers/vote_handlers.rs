@@ -17,8 +17,9 @@ use crate::{
     models::vote::{
         parse_iso_timestamp_or_now, validate_selection, BulkVoteRequest, BulkVoteResponse, Comment,
         CommentQuery, CommentResponse, CommentStats, CreateComment, CreateLike, CreateVote,
-        FixtureCountsResponse, FixtureStats, Like, LikeResponse, LikeStats, TotalCountsResponse,
-        UserVoteStatus, Vote, VoteQuery, VoteResponse, VoteStats,
+        FixtureCountsResponse, FixtureStats, Like, LikeResponse, LikeStats,
+        MarkCommentsSeenRequest, TotalCountsResponse, UserVoteStatus, Vote, VoteQuery,
+        VoteResponse, VoteStats,
     },
     state::AppState,
 };
@@ -47,6 +48,72 @@ async fn get_all_user_ids(state: &AppState, exclude_user_id: Option<&str>) -> Ve
         Err(e) => {
             eprintln!("❌ Error getting user IDs: {}", e);
             Vec::new()
+        }
+    }
+}
+
+// ========== MARK COMMENTS AS SEEN (READ RECEIPTS) ==========
+// ========== MARK COMMENTS AS SEEN (READ RECEIPTS) ==========
+pub async fn mark_comments_seen(
+    State(state): State<AppState>,
+    Json(payload): Json<MarkCommentsSeenRequest>,
+) -> Result<Json<serde_json::Value>> {
+    println!(
+        "👁️ Marking comments as seen for user: {} in fixture: {}",
+        payload.user_id, payload.fixture_id
+    );
+
+    let collection: Collection<Comment> = state.db.collection("room");
+
+    let filter = if let Some(comment_ids) = &payload.comment_ids {
+        // Convert string IDs to ObjectIds
+        let mut object_ids = Vec::new();
+        for id_str in comment_ids {
+            if let Ok(oid) = ObjectId::parse_str(id_str) {
+                object_ids.push(oid);
+            }
+        }
+
+        doc! {
+            "fixtureId": &payload.fixture_id,
+            "_id": { "$in": object_ids },
+            "seenBy": { "$ne": &payload.user_id }
+        }
+    } else {
+        // Mark all unseen comments in this fixture as seen
+        doc! {
+            "fixtureId": &payload.fixture_id,
+            "voterId": { "$ne": &payload.user_id },
+            "seenBy": { "$ne": &payload.user_id }
+        }
+    };
+
+    let update = doc! {
+        "$addToSet": { "seenBy": &payload.user_id }
+    };
+
+    match collection.update_many(filter, update).await {
+        Ok(result) => {
+            println!("✅ Marked {} comments as seen", result.modified_count);
+
+            let response = serde_json::json!({
+                "success": true,
+                "message": format!("Marked {} comments as seen", result.modified_count),
+                "marked_count": result.modified_count,
+                "fixture_id": payload.fixture_id,
+                "user_id": payload.user_id,
+            });
+
+            Ok(Json(response))
+        }
+        Err(err) => {
+            eprintln!("❌ Error marking comments as seen: {}", err);
+            let error_response = serde_json::json!({
+                "success": false,
+                "message": format!("Failed to mark comments: {}", err),
+                "marked_count": 0,
+            });
+            Ok(Json(error_response))
         }
     }
 }
@@ -320,6 +387,60 @@ pub async fn bulk_create_votes(
         failed_count,
         failed_votes,
     }))
+}
+// Get unread comment counts for a user across all fixtures
+pub async fn get_user_unread_counts(
+    State(state): State<AppState>,
+    Path(user_id): Path<String>,
+) -> Result<Json<serde_json::Value>> {
+    println!("🔔 Getting unread comment counts for user: {}", user_id);
+
+    let collection: Collection<Comment> = state.db.collection("room");
+
+    // Aggregate: group by fixture_id and count unseen comments
+    let pipeline = vec![
+        doc! {
+            "$match": {
+                "voterId": { "$ne": &user_id },
+                "seenBy": { "$ne": &user_id }
+            }
+        },
+        doc! {
+            "$group": {
+                "_id": "$fixtureId",
+                "count": { "$sum": 1 }
+            }
+        },
+    ];
+
+    // Execute aggregation cursor
+    let mut cursor = collection.aggregate(pipeline).await?;
+
+    let mut counts = std::collections::HashMap::new();
+
+    // Iterate through cursor results - each result is a bson::Document
+    while let Some(doc) = cursor.try_next().await? {
+        // Extract fixture_id from "_id" field
+        let fixture_id = doc
+            .get("_id")
+            .and_then(|id| id.as_str())
+            .map(|s| s.to_string());
+
+        // Extract count from "count" field
+        let count = doc.get("count").and_then(|c| c.as_i64()).unwrap_or(0);
+
+        if let Some(id) = fixture_id {
+            counts.insert(id, count);
+        }
+    }
+
+    let response = json!({
+        "success": true,
+        "user_id": user_id,
+        "unread_counts": counts,
+    });
+
+    Ok(Json(response))
 }
 
 pub async fn get_user_votes(
@@ -742,6 +863,7 @@ pub async fn create_comment(
         payload.username, payload.voter_id
     );
 
+    // ========== VALIDATION ==========
     payload
         .validate()
         .map_err(|e| AppError::ValidationError(e.to_string()))?;
@@ -760,6 +882,7 @@ pub async fn create_comment(
         ));
     }
 
+    // ========== CREATE COMMENT DOCUMENT ==========
     let collection: Collection<Comment> = state.db.collection("room");
     let comment_timestamp = parse_iso_timestamp_or_now(&payload.timestamp);
 
@@ -775,12 +898,14 @@ pub async fn create_comment(
         created_at: Some(BsonDateTime::from_chrono(Utc::now())),
         likes: Some(0),
         replies: Some(Vec::new()),
+        seen_by: vec![], // ✅ Initialize empty seen_by array for read receipts
     };
 
     let insert_result = collection.insert_one(comment).await?;
     let comment_id = insert_result.inserted_id.as_object_id().unwrap().to_hex();
     let comment_id_for_closure = comment_id.clone();
 
+    // ========== FETCH INSERTED COMMENT FOR RESPONSE ==========
     let filter = doc! { "_id": insert_result.inserted_id };
     let inserted_comment = collection
         .find_one(filter)
@@ -792,72 +917,114 @@ pub async fn create_comment(
         comment_id, payload.username
     );
 
-    // ===== UPDATE COMMENT COUNTER IN GAMES COLLECTION =====
+    // ========== UPDATE COMMENT COUNTER IN GAMES COLLECTION ==========
     let games_collection: Collection<Game> = state.db.collection("games");
     let games_update_filter = doc! { "match_id": &payload.fixture_id };
     let games_update = doc! { "$inc": { "comments": 1 } };
     let _ = games_collection
         .update_one(games_update_filter, games_update)
         .await;
-    // =======================================================
 
-    // ===== SEND COMMENT NOTIFICATIONS TO ALL USERS =====
+    // ========== GET FIXTURE DETAILS FOR NOTIFICATION ==========
+    let game_filter = doc! { "match_id": &payload.fixture_id };
+    let game = games_collection.find_one(game_filter).await;
+    let (home_team, away_team) = match game {
+        Ok(Some(g)) => (g.home_team, g.away_team),
+        _ => ("Unknown".to_string(), "Unknown".to_string()),
+    };
+
+    // ========== SEND FCM NOTIFICATIONS TO ALL COMRADES ==========
     let state_clone = state.clone();
     let payload_clone = payload.clone();
     let comment_text = payload.comment.clone();
+    let fixture_name = format!("{} vs {}", home_team, away_team);
+    let short_comment = if comment_text.len() > 50 {
+        format!("{}...", &comment_text[0..50])
+    } else {
+        comment_text.clone()
+    };
+    let commenter_name = payload_clone.username.clone();
 
     tokio::spawn(async move {
         if let Ok(fcm_service) = fcm_service::init_fcm_service().await {
+            // Get all users EXCEPT the commenter
             let all_user_ids = get_all_user_ids(&state_clone, Some(&payload_clone.voter_id)).await;
-
-            let games_collection: Collection<Game> = state_clone.db.collection("games");
-            let game_filter = doc! { "match_id": &payload_clone.fixture_id };
-
-            let (home_team, away_team) = match games_collection.find_one(game_filter).await {
-                Ok(Some(game)) => (game.home_team.clone(), game.away_team.clone()),
-                _ => ("Unknown".to_string(), "Unknown".to_string()),
-            };
-
-            let fixture_name = format!("{} vs {}", home_team, away_team);
-            let short_comment = if comment_text.len() > 30 {
-                format!("{}...", &comment_text[0..30])
-            } else {
-                comment_text.clone()
-            };
 
             if !all_user_ids.is_empty() {
                 println!(
-                    "📱 Notifying ALL {} users about new comment",
+                    "📱 Sending comment notifications to {} users",
                     all_user_ids.len()
                 );
-                let _ = fcm_service
+
+                // Prepare notification payload
+                let notification_payload = serde_json::json!({
+                    "fixture_id": payload_clone.fixture_id,
+                    "comment_id": comment_id_for_closure,
+                    "voter_id": payload_clone.voter_id,
+                    "voter_username": payload_clone.username,
+                    "voter_selection": payload_clone.selection,
+                    "comment": comment_text,
+                    "comment_preview": short_comment,
+                    "home_team": home_team,
+                    "away_team": away_team,
+                    "fixture_name": fixture_name,
+                    "type": "comment_notification",
+                    "action": "new_comment",
+                    "timestamp": Utc::now().to_rfc3339(),
+                });
+
+                // Send to all users
+                let result = fcm_service
                     .send_to_multiple_users(
                         &state_clone,
                         all_user_ids,
-                        "💬 New comment on fixture!",
-                        &format!(
-                            "@{} commented: \"{}\" on {}",
-                            payload_clone.username, short_comment, fixture_name
-                        ),
-                        serde_json::json!({
-                            "fixture_id": payload_clone.fixture_id,
-                            "comment_id": comment_id_for_closure,
-                            "voter_id": payload_clone.voter_id,
-                            "voter_username": payload_clone.username,
-                            "voter_selection": payload_clone.selection,
-                            "comment": comment_text,
-                            "home_team": home_team,
-                            "away_team": away_team,
-                            "type": "comment_notification",
-                            "action": "new_comment"
-                        }),
+                        &format!("💬 @{} commented", commenter_name),
+                        &format!("\"{}\" on {}", short_comment, fixture_name),
+                        notification_payload,
                         "comment_notification",
                     )
                     .await;
+
+                match result {
+                    Ok(sent_count) => println!("✅ Sent {} comment notifications", sent_count),
+                    Err(e) => eprintln!("❌ Failed to send comment notifications: {}", e),
+                }
+            } else {
+                println!("📱 No other users to notify");
             }
+        } else {
+            eprintln!("❌ Failed to initialize FCM service");
         }
     });
 
+    // ========== WEB SOCKET BROADCAST ==========
+    // Get broadcaster for this fixture and send real-time update
+    let tx = state.get_or_create_broadcaster(&payload.fixture_id);
+
+    let ws_message = serde_json::json!({
+        "type": "comment.new",
+        "payload": {
+            "comment_id": comment_id,
+            "voter_id": payload.voter_id,
+            "username": payload.username,
+            "fixture_id": payload.fixture_id,
+            "selection": payload.selection,
+            "comment": payload.comment,
+            "timestamp": Utc::now().to_rfc3339(),
+            "likes": 0,
+        },
+        "timestamp": Utc::now().to_rfc3339(),
+    });
+
+    if let Ok(message_json) = serde_json::to_string(&ws_message) {
+        let _ = tx.send(message_json);
+        println!(
+            "📡 Broadcasted comment via WebSocket to fixture: {}",
+            payload.fixture_id
+        );
+    }
+
+    // ========== RETURN RESPONSE ==========
     Ok(Json(CommentResponse {
         success: true,
         message: "Comment submitted successfully".to_string(),

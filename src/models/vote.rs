@@ -1,5 +1,5 @@
 use bson::{oid::ObjectId, DateTime as BsonDateTime};
-use chrono::{DateTime, NaiveDateTime, NaiveDate, TimeZone, Utc};
+use chrono::{DateTime, NaiveDate, NaiveDateTime, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 use validator::Validate;
 
@@ -31,11 +31,11 @@ pub struct Vote {
     #[validate(length(min = 1, message = "Away team is required"))]
     pub away_team: String,
 
-    pub draw: String, // String literal "draw" as per requirement
+    pub draw: String,
 
     #[serde(rename = "selection")]
     #[validate(length(min = 1, message = "Selection is required"))]
-    pub selection: String, // "home_team", "draw", or "away_team"
+    pub selection: String,
 
     #[serde(rename = "voteTimestamp")]
     pub vote_timestamp: BsonDateTime,
@@ -78,7 +78,6 @@ pub struct CreateVote {
 
 // ========== LIKE MODELS ==========
 
-// Like model for storing likes
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]
 pub struct Like {
     #[serde(rename = "_id", skip_serializing_if = "Option::is_none")]
@@ -98,7 +97,7 @@ pub struct Like {
 
     #[serde(rename = "action")]
     #[validate(length(min = 1, message = "Action is required"))]
-    pub action: String, // "like" or "unlike"
+    pub action: String,
 
     #[serde(rename = "likeTimestamp")]
     pub like_timestamp: BsonDateTime,
@@ -107,7 +106,6 @@ pub struct Like {
     pub created_at: Option<BsonDateTime>,
 }
 
-// For creating new likes (from Flutter app)
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]
 pub struct CreateLike {
     #[serde(rename = "voterId")]
@@ -127,10 +125,7 @@ pub struct CreateLike {
     pub action: String,
 }
 
-// ========== COMMENT MODELS (UPDATED WITH SELECTION) ==========
-
-// Comment model for storing
-
+// ========== COMMENT MODELS - UPDATED WITH SEEN_BY ==========
 
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]
 pub struct Comment {
@@ -149,10 +144,9 @@ pub struct Comment {
     #[validate(length(min = 1, message = "Fixture ID is required"))]
     pub fixture_id: String,
 
-    // NEW FIELD: User's vote selection when they commented
     #[serde(rename = "selection")]
     #[validate(length(min = 1, message = "Selection is required"))]
-    pub selection: String, // "home_team", "draw", or "away_team"
+    pub selection: String,
 
     #[serde(rename = "comment")]
     #[validate(length(
@@ -163,7 +157,7 @@ pub struct Comment {
     pub comment: String,
 
     #[serde(rename = "timestamp")]
-    pub timestamp: String, // ISO 8601 string from Flutter
+    pub timestamp: String,
 
     #[serde(rename = "commentTimestamp")]
     pub comment_timestamp: BsonDateTime,
@@ -176,9 +170,12 @@ pub struct Comment {
 
     #[serde(rename = "replies", skip_serializing_if = "Option::is_none")]
     pub replies: Option<Vec<ObjectId>>,
+
+    // ✅ NEW: Track which users have seen this comment (read receipts)
+    #[serde(rename = "seenBy", default)]
+    pub seen_by: Vec<String>,
 }
 
-// For creating new comments (from Flutter app) - UPDATED WITH SELECTION
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]
 pub struct CreateComment {
     #[serde(rename = "voterId")]
@@ -193,10 +190,9 @@ pub struct CreateComment {
     #[validate(length(min = 1, message = "Fixture ID is required"))]
     pub fixture_id: String,
 
-    // NEW FIELD: User's vote selection when they commented
     #[serde(rename = "selection")]
     #[validate(length(min = 1, message = "Selection is required"))]
-    pub selection: String, // "home_team", "draw", or "away_team"
+    pub selection: String,
 
     #[serde(rename = "comment")]
     #[validate(length(
@@ -211,9 +207,40 @@ pub struct CreateComment {
     pub timestamp: String,
 }
 
-// ========== STATISTICS MODELS (UPDATED) ==========
+// ✅ NEW: Request to mark comments as seen
+#[derive(Debug, Clone, Serialize, Deserialize, Validate)]
+pub struct MarkCommentsSeenRequest {
+    #[serde(rename = "userId")]
+    pub user_id: String,
 
-// Vote statistics response
+    #[serde(rename = "fixtureId")]
+    pub fixture_id: String,
+
+    #[serde(rename = "commentIds", skip_serializing_if = "Option::is_none")]
+    pub comment_ids: Option<Vec<String>>, // If None, mark all as seen
+}
+
+// ✅ NEW: Typing indicator request (sent via WebSocket)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TypingIndicator {
+    pub user_id: String,
+    pub username: String,
+    pub fixture_id: String,
+    pub is_typing: bool,
+}
+
+// ✅ NEW: Read receipt (sent via WebSocket)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReadReceipt {
+    pub comment_id: String,
+    pub user_id: String,
+    pub username: String,
+    pub fixture_id: String,
+    pub seen_at: String,
+}
+
+// ========== STATISTICS MODELS ==========
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct VoteStats {
     #[serde(rename = "fixtureId")]
@@ -247,7 +274,6 @@ pub struct VoteStats {
     pub away_percentage: f64,
 }
 
-// Like statistics response
 #[derive(Debug, Serialize, Deserialize)]
 pub struct LikeStats {
     #[serde(rename = "fixtureId")]
@@ -260,7 +286,6 @@ pub struct LikeStats {
     pub user_has_liked: bool,
 }
 
-// Comment statistics response - UPDATED WITH SELECTION FIELDS
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CommentStats {
     #[serde(rename = "fixtureId")]
@@ -269,7 +294,6 @@ pub struct CommentStats {
     #[serde(rename = "totalComments")]
     pub total_comments: i64,
 
-    // NEW: Comment counts by selection
     #[serde(rename = "homeComments")]
     pub home_comments: i64,
 
@@ -283,7 +307,6 @@ pub struct CommentStats {
     pub recent_comments: Vec<Comment>,
 }
 
-// Comment with user info (for responses) - UPDATED WITH SELECTION
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CommentWithUser {
     #[serde(rename = "_id", skip_serializing_if = "Option::is_none")]
@@ -298,7 +321,6 @@ pub struct CommentWithUser {
     #[serde(rename = "fixtureId")]
     pub fixture_id: String,
 
-    // NEW FIELD: User's vote selection
     #[serde(rename = "selection")]
     pub selection: String,
 
@@ -314,6 +336,9 @@ pub struct CommentWithUser {
     #[serde(rename = "replies", skip_serializing_if = "Option::is_none")]
     pub replies: Option<Vec<ObjectId>>,
 
+    #[serde(rename = "seenBy", default)]
+    pub seen_by: Vec<String>,
+
     #[serde(rename = "userDisplayName", skip_serializing_if = "Option::is_none")]
     pub user_display_name: Option<String>,
 
@@ -324,7 +349,6 @@ pub struct CommentWithUser {
     pub is_verified: bool,
 }
 
-// User vote status
 #[derive(Debug, Serialize, Deserialize)]
 pub struct UserVoteStatus {
     #[serde(rename = "fixtureId")]
@@ -343,7 +367,6 @@ pub struct UserVoteStatus {
     pub user_comments_count: i64,
 }
 
-// Combined stats for a fixture
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FixtureStats {
     #[serde(rename = "fixtureId")]
@@ -362,7 +385,7 @@ pub struct FixtureStats {
     pub like_stats: LikeStats,
 
     #[serde(rename = "commentStats")]
-    pub comment_stats: CommentStats, // Now includes selection breakdown
+    pub comment_stats: CommentStats,
 }
 
 // ========== API RESPONSE WRAPPERS ==========
@@ -409,7 +432,7 @@ pub struct StatsResponse {
     pub data: FixtureStats,
 }
 
-// ========== QUERY PARAMETERS (UPDATED) ==========
+// ========== QUERY PARAMETERS ==========
 
 #[derive(Debug, Deserialize)]
 pub struct VoteQuery {
@@ -430,7 +453,6 @@ pub struct CommentQuery {
     #[serde(rename = "voterId")]
     pub voter_id: Option<String>,
 
-    // NEW: Filter by vote selection
     #[serde(rename = "selection")]
     pub selection: Option<String>,
 
@@ -438,7 +460,7 @@ pub struct CommentQuery {
     pub skip: Option<u64>,
 
     #[serde(rename = "sortBy")]
-    pub sort_by: Option<String>, // "newest", "oldest", "most_liked"
+    pub sort_by: Option<String>,
 }
 
 // ========== BULK OPERATIONS ==========
@@ -473,7 +495,6 @@ pub struct FailedVote {
 
 // ========== VALIDATION HELPER ==========
 
-// Validation for selection field
 pub fn validate_selection(selection: &str) -> Result<(), String> {
     let valid_selections = vec!["home_team", "draw", "away_team"];
     if !valid_selections.contains(&selection) {
@@ -484,30 +505,23 @@ pub fn validate_selection(selection: &str) -> Result<(), String> {
 
 // ========== TIMESTAMP PARSING ==========
 
-// Helper function for timestamp parsing
 pub fn parse_iso_timestamp(timestamp_str: &str) -> Result<BsonDateTime, String> {
-    // Log the timestamp we're trying to parse for debugging
     println!("🔍 Parsing timestamp: '{}'", timestamp_str);
 
-    // Try RFC 3339 format first (most common)
     if let Ok(dt) = DateTime::parse_from_rfc3339(timestamp_str) {
         println!("✅ Parsed as RFC 3339: {}", dt);
         return Ok(BsonDateTime::from_millis(dt.timestamp_millis()));
     }
 
-    // Try parsing as DateTime with Utc timezone (for strings ending with Z)
     if timestamp_str.ends_with('Z') {
-        // Remove the Z and parse as naive datetime, then add UTC
         let without_z = timestamp_str.trim_end_matches('Z');
 
-        // Try with milliseconds
         if let Ok(ndt) = NaiveDateTime::parse_from_str(without_z, "%Y-%m-%dT%H:%M:%S%.f") {
             let dt_utc = DateTime::<Utc>::from_naive_utc_and_offset(ndt, Utc);
             println!("✅ Parsed with milliseconds: {}", dt_utc);
             return Ok(BsonDateTime::from_millis(dt_utc.timestamp_millis()));
         }
 
-        // Try without milliseconds
         if let Ok(ndt) = NaiveDateTime::parse_from_str(without_z, "%Y-%m-%dT%H:%M:%S") {
             let dt_utc = DateTime::<Utc>::from_naive_utc_and_offset(ndt, Utc);
             println!("✅ Parsed without milliseconds: {}", dt_utc);
@@ -515,66 +529,51 @@ pub fn parse_iso_timestamp(timestamp_str: &str) -> Result<BsonDateTime, String> 
         }
     }
 
-    // Try ISO 8601 format with explicit UTC offset (+00:00)
     if let Ok(dt) = DateTime::parse_from_str(timestamp_str, "%Y-%m-%dT%H:%M:%S%.f%:z") {
         println!("✅ Parsed with timezone offset: {}", dt);
         return Ok(BsonDateTime::from_millis(dt.timestamp_millis()));
     }
 
-    // Try without fractional seconds and with timezone offset
     if let Ok(dt) = DateTime::parse_from_str(timestamp_str, "%Y-%m-%dT%H:%M:%S%:z") {
         println!("✅ Parsed with timezone offset (no ms): {}", dt);
         return Ok(BsonDateTime::from_millis(dt.timestamp_millis()));
     }
 
-    // Try as a simple date time string (space instead of T)
     let dt_clean = timestamp_str.replace('T', " ").replace('Z', "");
 
-    // Try with milliseconds
     if let Ok(ndt) = NaiveDateTime::parse_from_str(&dt_clean, "%Y-%m-%d %H:%M:%S%.f") {
         let dt_utc = DateTime::<Utc>::from_naive_utc_and_offset(ndt, Utc);
         println!("✅ Parsed as space-separated with ms: {}", dt_utc);
         return Ok(BsonDateTime::from_millis(dt_utc.timestamp_millis()));
     }
 
-    // Try without milliseconds
     if let Ok(ndt) = NaiveDateTime::parse_from_str(&dt_clean, "%Y-%m-%d %H:%M:%S") {
         let dt_utc = DateTime::<Utc>::from_naive_utc_and_offset(ndt, Utc);
         println!("✅ Parsed as space-separated: {}", dt_utc);
         return Ok(BsonDateTime::from_millis(dt_utc.timestamp_millis()));
     }
 
-    // Try Unix timestamp (seconds since epoch)
     if let Ok(ts) = timestamp_str.parse::<i64>() {
-        // Check if it's seconds (10 digits) or milliseconds (13 digits)
         if timestamp_str.len() == 10 {
-            // Seconds timestamp
             if let Some(dt) = DateTime::from_timestamp(ts, 0) {
                 println!("✅ Parsed as Unix seconds: {}", dt);
                 return Ok(BsonDateTime::from_millis(dt.timestamp_millis()));
             }
         } else if timestamp_str.len() >= 13 {
-            // Milliseconds timestamp
             return Ok(BsonDateTime::from_millis(ts));
         }
     }
 
-    // Try parsing as a date only (for fallback)
     if let Ok(ndt) = NaiveDate::parse_from_str(timestamp_str, "%Y-%m-%d") {
         let dt_utc = ndt.and_hms_opt(0, 0, 0).unwrap().and_utc();
         println!("⚠️ Parsed as date only: {}", dt_utc);
         return Ok(BsonDateTime::from_millis(dt_utc.timestamp_millis()));
     }
 
-    // If all parsing fails, return error with helpful message
     println!("❌ Failed to parse timestamp: '{}'", timestamp_str);
-    Err(format!(
-        "Invalid timestamp format: '{}'. Expected ISO 8601 format (e.g., 2024-01-01T12:00:00Z)",
-        timestamp_str
-    ))
+    Err(format!("Invalid timestamp format: '{}'", timestamp_str))
 }
 
-// Simple version that returns current time on failure
 pub fn parse_iso_timestamp_or_now(timestamp_str: &str) -> BsonDateTime {
     parse_iso_timestamp(timestamp_str).unwrap_or_else(|_| {
         println!(
@@ -585,9 +584,8 @@ pub fn parse_iso_timestamp_or_now(timestamp_str: &str) -> BsonDateTime {
     })
 }
 
-// ========== FROM CREATE IMPLEMENTATIONS (UPDATED) ==========
+// ========== FROM CREATE IMPLEMENTATIONS ==========
 
-// Helper function to create a Vote from CreateVote
 impl Vote {
     pub fn from_create_vote(create_vote: CreateVote) -> Self {
         Vote {
@@ -605,16 +603,13 @@ impl Vote {
     }
 }
 
-// Helper function to create a Like from CreateLike
 impl Like {
     pub fn from_create_like(create_like: CreateLike) -> Self {
-        // Use current time instead of trying to parse a timestamp
-        // Since the Flutter app doesn't send a timestamp for likes
         let current_time = BsonDateTime::from_millis(Utc::now().timestamp_millis());
-
-        println!("📝 Creating like for fixture: {}, user: {}, action: {}",
-                 create_like.fixture_id, create_like.voter_id, create_like.action);
-
+        println!(
+            "📝 Creating like for fixture: {}, user: {}, action: {}",
+            create_like.fixture_id, create_like.voter_id, create_like.action
+        );
         Like {
             id: None,
             voter_id: create_like.voter_id,
@@ -627,10 +622,8 @@ impl Like {
     }
 }
 
-// Helper function to create a Comment from CreateComment - UPDATED WITH SELECTION
 impl Comment {
     pub fn from_create_comment(create_comment: CreateComment) -> Result<Self, String> {
-        // Validate selection
         let valid_selections = vec!["home_team", "draw", "away_team"];
         if !valid_selections.contains(&create_comment.selection.as_str()) {
             return Err(format!(
@@ -639,7 +632,6 @@ impl Comment {
             ));
         }
 
-        // Try to parse the timestamp, but if it fails, use current time and log warning
         let comment_timestamp = match parse_iso_timestamp(&create_comment.timestamp) {
             Ok(ts) => ts,
             Err(e) => {
@@ -653,20 +645,20 @@ impl Comment {
             voter_id: create_comment.voter_id,
             username: create_comment.username,
             fixture_id: create_comment.fixture_id,
-            selection: create_comment.selection, // NEW: Store the user's vote
+            selection: create_comment.selection,
             comment: create_comment.comment,
             timestamp: create_comment.timestamp,
             comment_timestamp,
             created_at: Some(BsonDateTime::from_millis(Utc::now().timestamp_millis())),
             likes: Some(0),
             replies: Some(Vec::new()),
+            seen_by: vec![], // ✅ NEW: Initialize empty seen_by
         })
     }
 }
 
 // ========== SERIALIZATION HELPERS ==========
 
-// Helper for BsonDateTime serialization
 pub fn bson_datetime_to_iso_string(dt: &BsonDateTime) -> String {
     let millis = dt.timestamp_millis();
     let dt_chrono = Utc
@@ -676,24 +668,20 @@ pub fn bson_datetime_to_iso_string(dt: &BsonDateTime) -> String {
     dt_chrono.to_rfc3339()
 }
 
-// Helper for optional BsonDateTime serialization
 pub fn option_bson_datetime_to_iso_string(dt: &Option<BsonDateTime>) -> Option<String> {
     dt.as_ref().map(bson_datetime_to_iso_string)
 }
 
 // ========== RESPONSE WRAPPERS ==========
 
-// For responses that need to be compatible with existing Game API
 #[derive(Debug, Serialize)]
 pub struct ApiResponse<T> {
     pub success: bool,
     pub data: T,
-
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
 }
 
-// For compatibility with your existing game handlers
 #[derive(Debug, Serialize)]
 pub struct PaginatedResponse<T> {
     pub data: Vec<T>,
@@ -702,7 +690,6 @@ pub struct PaginatedResponse<T> {
     pub limit: i64,
 }
 
-// Error response structure
 #[derive(Debug, Serialize)]
 pub struct ErrorResponse {
     pub success: bool,
@@ -724,7 +711,6 @@ impl ErrorResponse {
 
 // ========== TOTAL COUNTS MODELS ==========
 
-// Total counts for all fixtures
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TotalCounts {
     #[serde(rename = "totalVotes")]
@@ -746,7 +732,6 @@ pub struct TotalCounts {
     pub timestamp: String,
 }
 
-// Response for total counts
 #[derive(Debug, Serialize)]
 pub struct TotalCountsResponse {
     pub success: bool,
@@ -754,7 +739,6 @@ pub struct TotalCountsResponse {
     pub data: TotalCounts,
 }
 
-// Counts for a specific fixture
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FixtureCounts {
     #[serde(rename = "fixtureId")]
@@ -797,7 +781,6 @@ pub struct FixtureCounts {
     pub user_selection: Option<String>,
 }
 
-// Response for fixture counts
 #[derive(Debug, Serialize)]
 pub struct FixtureCountsResponse {
     pub success: bool,
@@ -805,7 +788,6 @@ pub struct FixtureCountsResponse {
     pub data: FixtureCounts,
 }
 
-// Batch request for multiple fixtures
 #[derive(Debug, Deserialize)]
 pub struct BatchFixtureCountsRequest {
     #[serde(rename = "fixtureIds")]
@@ -815,7 +797,6 @@ pub struct BatchFixtureCountsRequest {
     pub user_id: Option<String>,
 }
 
-// Single fixture count item for batch response
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FixtureCountItem {
     #[serde(rename = "fixtureId")]
@@ -849,286 +830,12 @@ pub struct FixtureCountItem {
     pub user_selection: Option<String>,
 }
 
-// Batch response for multiple fixtures
 #[derive(Debug, Serialize)]
 pub struct BatchFixtureCountsResponse {
     pub success: bool,
     pub message: String,
     pub data: Vec<FixtureCountItem>,
     pub count: usize,
-}
-
-// Vote breakdown for detailed stats
-#[derive(Debug, Serialize, Deserialize)]
-pub struct VoteBreakdown {
-    #[serde(rename = "homeVotes")]
-    pub home_votes: i64,
-
-    #[serde(rename = "drawVotes")]
-    pub draw_votes: i64,
-
-    #[serde(rename = "awayVotes")]
-    pub away_votes: i64,
-
-    #[serde(rename = "homePercentage")]
-    pub home_percentage: f64,
-
-    #[serde(rename = "drawPercentage")]
-    pub draw_percentage: f64,
-
-    #[serde(rename = "awayPercentage")]
-    pub away_percentage: f64,
-}
-
-// Detailed fixture stats including vote breakdown
-#[derive(Debug, Serialize, Deserialize)]
-pub struct DetailedFixtureStats {
-    #[serde(rename = "fixtureId")]
-    pub fixture_id: String,
-
-    #[serde(rename = "homeTeam")]
-    pub home_team: String,
-
-    #[serde(rename = "awayTeam")]
-    pub away_team: String,
-
-    #[serde(rename = "totalVotes")]
-    pub total_votes: i64,
-
-    #[serde(rename = "voteBreakdown")]
-    pub vote_breakdown: VoteBreakdown,
-
-    #[serde(rename = "totalLikes")]
-    pub total_likes: i64,
-
-    #[serde(rename = "totalComments")]
-    pub total_comments: i64,
-
-    #[serde(rename = "totalEngagement")]
-    pub total_engagement: i64,
-
-    #[serde(rename = "userHasVoted")]
-    pub user_has_voted: bool,
-
-    #[serde(rename = "userHasLiked")]
-    pub user_has_liked: bool,
-
-    #[serde(rename = "userSelection")]
-    pub user_selection: Option<String>,
-}
-
-// Response for detailed stats
-#[derive(Debug, Serialize)]
-pub struct DetailedFixtureStatsResponse {
-    pub success: bool,
-    pub message: String,
-    pub data: DetailedFixtureStats,
-}
-
-// ========== ADDITIONAL MODELS ==========
-
-// User activity summary
-#[derive(Debug, Serialize, Deserialize)]
-pub struct UserActivitySummary {
-    #[serde(rename = "voterId")]
-    pub voter_id: String,
-
-    #[serde(rename = "username")]
-    pub username: String,
-
-    #[serde(rename = "totalVotes")]
-    pub total_votes: i64,
-
-    #[serde(rename = "totalLikes")]
-    pub total_likes: i64,
-
-    #[serde(rename = "totalComments")]
-    pub total_comments: i64,
-
-    #[serde(rename = "firstActivity", skip_serializing_if = "Option::is_none")]
-    pub first_activity: Option<BsonDateTime>,
-
-    #[serde(rename = "lastActivity", skip_serializing_if = "Option::is_none")]
-    pub last_activity: Option<BsonDateTime>,
-
-    #[serde(rename = "favoriteTeams")]
-    pub favorite_teams: Vec<String>,
-
-    #[serde(rename = "mostVotedSelection", skip_serializing_if = "Option::is_none")]
-    pub most_voted_selection: Option<String>,
-}
-
-// Fixture summary with engagement metrics
-#[derive(Debug, Serialize, Deserialize)]
-pub struct FixtureEngagement {
-    #[serde(rename = "fixtureId")]
-    pub fixture_id: String,
-
-    #[serde(rename = "homeTeam")]
-    pub home_team: String,
-
-    #[serde(rename = "awayTeam")]
-    pub away_team: String,
-    pub league: String,
-    pub date: String,
-
-    #[serde(rename = "totalEngagement")]
-    pub total_engagement: i64,
-
-    #[serde(rename = "voteEngagement")]
-    pub vote_engagement: i64,
-
-    #[serde(rename = "likeEngagement")]
-    pub like_engagement: i64,
-
-    #[serde(rename = "commentEngagement")]
-    pub comment_engagement: i64,
-
-    #[serde(rename = "engagementScore")]
-    pub engagement_score: f64,
-
-    #[serde(rename = "trendingRank")]
-    pub trending_rank: i32,
-}
-
-// Real-time vote update
-#[derive(Debug, Serialize, Deserialize)]
-pub struct VoteUpdate {
-    #[serde(rename = "fixtureId")]
-    pub fixture_id: String,
-
-    #[serde(rename = "homeVotes")]
-    pub home_votes: i64,
-
-    #[serde(rename = "drawVotes")]
-    pub draw_votes: i64,
-
-    #[serde(rename = "awayVotes")]
-    pub away_votes: i64,
-
-    #[serde(rename = "totalVotes")]
-    pub total_votes: i64,
-
-    #[serde(rename = "updateTimestamp")]
-    pub update_timestamp: BsonDateTime,
-}
-
-// Like with user info
-#[derive(Debug, Serialize, Deserialize)]
-pub struct LikeWithUser {
-    #[serde(rename = "_id", skip_serializing_if = "Option::is_none")]
-    pub id: Option<ObjectId>,
-
-    #[serde(rename = "voterId")]
-    pub voter_id: String,
-
-    #[serde(rename = "username")]
-    pub username: String,
-
-    #[serde(rename = "fixtureId")]
-    pub fixture_id: String,
-    pub action: String,
-
-    #[serde(rename = "likeTimestamp")]
-    pub like_timestamp: BsonDateTime,
-
-    #[serde(rename = "userDisplayName", skip_serializing_if = "Option::is_none")]
-    pub user_display_name: Option<String>,
-
-    #[serde(rename = "userAvatar", skip_serializing_if = "Option::is_none")]
-    pub user_avatar: Option<String>,
-}
-
-// Batch update request for multiple fixtures
-#[derive(Debug, Deserialize)]
-pub struct BatchStatsRequest {
-    #[serde(rename = "fixtureIds")]
-    pub fixture_ids: Vec<String>,
-
-    #[serde(rename = "includeVotes")]
-    pub include_votes: Option<bool>,
-
-    #[serde(rename = "includeLikes")]
-    pub include_likes: Option<bool>,
-
-    #[serde(rename = "includeComments")]
-    pub include_comments: Option<bool>,
-}
-
-// Batch stats response
-#[derive(Debug, Serialize)]
-pub struct BatchStatsResponse {
-    pub success: bool,
-    pub data: Vec<FixtureStats>,
-
-    #[serde(rename = "totalFixtures")]
-    pub total_fixtures: usize,
-    pub timestamp: String,
-}
-
-// Popular fixture (for trending)
-#[derive(Debug, Serialize, Deserialize)]
-pub struct PopularFixture {
-    #[serde(rename = "fixtureId")]
-    pub fixture_id: String,
-
-    #[serde(rename = "homeTeam")]
-    pub home_team: String,
-
-    #[serde(rename = "awayTeam")]
-    pub away_team: String,
-    pub league: String,
-    pub date: String,
-
-    #[serde(rename = "totalEngagement")]
-    pub total_engagement: i64,
-
-    #[serde(rename = "voteCount")]
-    pub vote_count: i64,
-
-    #[serde(rename = "likeCount")]
-    pub like_count: i64,
-
-    #[serde(rename = "commentCount")]
-    pub comment_count: i64,
-    pub rank: i32,
-}
-
-// User vote history
-#[derive(Debug, Serialize, Deserialize)]
-pub struct UserVoteHistory {
-    #[serde(rename = "voterId")]
-    pub voter_id: String,
-
-    #[serde(rename = "username")]
-    pub username: String,
-
-    pub votes: Vec<UserVoteEntry>,
-
-    #[serde(rename = "totalVotes")]
-    pub total_votes: i64,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub accuracy: Option<f64>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct UserVoteEntry {
-    #[serde(rename = "fixtureId")]
-    pub fixture_id: String,
-
-    #[serde(rename = "homeTeam")]
-    pub home_team: String,
-
-    #[serde(rename = "awayTeam")]
-    pub away_team: String,
-    pub selection: String,
-
-    #[serde(rename = "voteTimestamp")]
-    pub vote_timestamp: BsonDateTime,
-
-    #[serde(rename = "wasCorrect", skip_serializing_if = "Option::is_none")]
-    pub was_correct: Option<bool>,
 }
 
 // ========== DEFAULT IMPLEMENTATIONS ==========
