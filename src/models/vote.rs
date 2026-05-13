@@ -3,6 +3,25 @@ use chrono::{DateTime, NaiveDate, NaiveDateTime, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 use validator::Validate;
 
+// ============================================================================
+// REPLY DATA STRUCT - For reply functionality (NEW)
+// ============================================================================
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReplyData {
+    #[serde(rename = "messageId")]
+    pub message_id: String,
+
+    pub text: String,
+    pub username: String,
+
+    #[serde(rename = "selection", skip_serializing_if = "Option::is_none")]
+    pub selection: Option<String>,
+
+    #[serde(rename = "isMe")]
+    pub is_me: bool,
+}
+
 // ========== VOTE MODELS ==========
 
 // Vote model for storing votes
@@ -125,7 +144,9 @@ pub struct CreateLike {
     pub action: String,
 }
 
-// ========== COMMENT MODELS - UPDATED WITH SEEN_BY ==========
+// ============================================================================
+// COMMENT MODELS - UPDATED WITH MEDIA & REPLY (NEW FIELDS)
+// ============================================================================
 
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]
 pub struct Comment {
@@ -149,11 +170,8 @@ pub struct Comment {
     pub selection: String,
 
     #[serde(rename = "comment")]
-    #[validate(length(
-        min = 1,
-        max = 500,
-        message = "Comment must be between 1 and 500 characters"
-    ))]
+    #[validate(length(max = 500, message = "Comment must be less than 500 characters"))]
+    // ✅ FIXED
     pub comment: String,
 
     #[serde(rename = "timestamp")]
@@ -171,10 +189,25 @@ pub struct Comment {
     #[serde(rename = "replies", skip_serializing_if = "Option::is_none")]
     pub replies: Option<Vec<ObjectId>>,
 
-    // ✅ NEW: Track which users have seen this comment (read receipts)
     #[serde(rename = "seenBy", default)]
     pub seen_by: Vec<String>,
+
+    #[serde(rename = "imageUrl", skip_serializing_if = "Option::is_none")]
+    pub image_url: Option<String>,
+
+    #[serde(rename = "videoUrl", skip_serializing_if = "Option::is_none")]
+    pub video_url: Option<String>,
+
+    #[serde(rename = "isImage", default)]
+    pub is_image: bool,
+
+    #[serde(rename = "isVideo", default)]
+    pub is_video: bool,
+
+    #[serde(rename = "replyTo", skip_serializing_if = "Option::is_none")]
+    pub reply_to: Option<ReplyData>,
 }
+// ========== CREATE COMMENT REQUEST - UPDATED ==========
 
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]
 pub struct CreateComment {
@@ -195,19 +228,34 @@ pub struct CreateComment {
     pub selection: String,
 
     #[serde(rename = "comment")]
-    #[validate(length(
-        min = 1,
-        max = 500,
-        message = "Comment must be between 1 and 500 characters"
-    ))]
+    // No validate here since comment can be empty if image/video present
     pub comment: String,
 
     #[serde(rename = "timestamp")]
     #[validate(length(min = 1, message = "Timestamp is required"))]
     pub timestamp: String,
-}
 
-// ✅ NEW: Request to mark comments as seen
+    // NEW FIELDS
+    #[serde(rename = "messageId", skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<String>,
+
+    #[serde(rename = "imageUrl", skip_serializing_if = "Option::is_none")]
+    pub image_url: Option<String>,
+
+    #[serde(rename = "videoUrl", skip_serializing_if = "Option::is_none")]
+    pub video_url: Option<String>,
+
+    #[serde(rename = "isImage", default)]
+    pub is_image: bool,
+
+    #[serde(rename = "isVideo", default)]
+    pub is_video: bool,
+
+    #[serde(rename = "replyTo", skip_serializing_if = "Option::is_none")]
+    pub reply_to: Option<ReplyData>,
+}
+// ========== MARK COMMENTS AS SEEN REQUEST ==========
+
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]
 pub struct MarkCommentsSeenRequest {
     #[serde(rename = "userId")]
@@ -217,10 +265,11 @@ pub struct MarkCommentsSeenRequest {
     pub fixture_id: String,
 
     #[serde(rename = "commentIds", skip_serializing_if = "Option::is_none")]
-    pub comment_ids: Option<Vec<String>>, // If None, mark all as seen
+    pub comment_ids: Option<Vec<String>>,
 }
 
-// ✅ NEW: Typing indicator request (sent via WebSocket)
+// ========== TYPING INDICATOR (WebSocket) ==========
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TypingIndicator {
     pub user_id: String,
@@ -229,7 +278,8 @@ pub struct TypingIndicator {
     pub is_typing: bool,
 }
 
-// ✅ NEW: Read receipt (sent via WebSocket)
+// ========== READ RECEIPT (WebSocket) ==========
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReadReceipt {
     pub comment_id: String,
@@ -237,6 +287,17 @@ pub struct ReadReceipt {
     pub username: String,
     pub fixture_id: String,
     pub seen_at: String,
+}
+
+// ========== UNREAD COUNTS RESPONSE ==========
+
+#[derive(Debug, Serialize)]
+pub struct UnreadCountsResponse {
+    pub success: bool,
+    #[serde(rename = "userId")]
+    pub user_id: String,
+    #[serde(rename = "unreadCounts")]
+    pub unread_counts: std::collections::HashMap<String, i64>,
 }
 
 // ========== STATISTICS MODELS ==========
@@ -493,222 +554,6 @@ pub struct FailedVote {
     pub vote_data: CreateVote,
 }
 
-// ========== VALIDATION HELPER ==========
-
-pub fn validate_selection(selection: &str) -> Result<(), String> {
-    let valid_selections = vec!["home_team", "draw", "away_team"];
-    if !valid_selections.contains(&selection) {
-        return Err(format!("Selection must be one of: {:?}", valid_selections));
-    }
-    Ok(())
-}
-
-// ========== TIMESTAMP PARSING ==========
-
-pub fn parse_iso_timestamp(timestamp_str: &str) -> Result<BsonDateTime, String> {
-    println!("🔍 Parsing timestamp: '{}'", timestamp_str);
-
-    if let Ok(dt) = DateTime::parse_from_rfc3339(timestamp_str) {
-        println!("✅ Parsed as RFC 3339: {}", dt);
-        return Ok(BsonDateTime::from_millis(dt.timestamp_millis()));
-    }
-
-    if timestamp_str.ends_with('Z') {
-        let without_z = timestamp_str.trim_end_matches('Z');
-
-        if let Ok(ndt) = NaiveDateTime::parse_from_str(without_z, "%Y-%m-%dT%H:%M:%S%.f") {
-            let dt_utc = DateTime::<Utc>::from_naive_utc_and_offset(ndt, Utc);
-            println!("✅ Parsed with milliseconds: {}", dt_utc);
-            return Ok(BsonDateTime::from_millis(dt_utc.timestamp_millis()));
-        }
-
-        if let Ok(ndt) = NaiveDateTime::parse_from_str(without_z, "%Y-%m-%dT%H:%M:%S") {
-            let dt_utc = DateTime::<Utc>::from_naive_utc_and_offset(ndt, Utc);
-            println!("✅ Parsed without milliseconds: {}", dt_utc);
-            return Ok(BsonDateTime::from_millis(dt_utc.timestamp_millis()));
-        }
-    }
-
-    if let Ok(dt) = DateTime::parse_from_str(timestamp_str, "%Y-%m-%dT%H:%M:%S%.f%:z") {
-        println!("✅ Parsed with timezone offset: {}", dt);
-        return Ok(BsonDateTime::from_millis(dt.timestamp_millis()));
-    }
-
-    if let Ok(dt) = DateTime::parse_from_str(timestamp_str, "%Y-%m-%dT%H:%M:%S%:z") {
-        println!("✅ Parsed with timezone offset (no ms): {}", dt);
-        return Ok(BsonDateTime::from_millis(dt.timestamp_millis()));
-    }
-
-    let dt_clean = timestamp_str.replace('T', " ").replace('Z', "");
-
-    if let Ok(ndt) = NaiveDateTime::parse_from_str(&dt_clean, "%Y-%m-%d %H:%M:%S%.f") {
-        let dt_utc = DateTime::<Utc>::from_naive_utc_and_offset(ndt, Utc);
-        println!("✅ Parsed as space-separated with ms: {}", dt_utc);
-        return Ok(BsonDateTime::from_millis(dt_utc.timestamp_millis()));
-    }
-
-    if let Ok(ndt) = NaiveDateTime::parse_from_str(&dt_clean, "%Y-%m-%d %H:%M:%S") {
-        let dt_utc = DateTime::<Utc>::from_naive_utc_and_offset(ndt, Utc);
-        println!("✅ Parsed as space-separated: {}", dt_utc);
-        return Ok(BsonDateTime::from_millis(dt_utc.timestamp_millis()));
-    }
-
-    if let Ok(ts) = timestamp_str.parse::<i64>() {
-        if timestamp_str.len() == 10 {
-            if let Some(dt) = DateTime::from_timestamp(ts, 0) {
-                println!("✅ Parsed as Unix seconds: {}", dt);
-                return Ok(BsonDateTime::from_millis(dt.timestamp_millis()));
-            }
-        } else if timestamp_str.len() >= 13 {
-            return Ok(BsonDateTime::from_millis(ts));
-        }
-    }
-
-    if let Ok(ndt) = NaiveDate::parse_from_str(timestamp_str, "%Y-%m-%d") {
-        let dt_utc = ndt.and_hms_opt(0, 0, 0).unwrap().and_utc();
-        println!("⚠️ Parsed as date only: {}", dt_utc);
-        return Ok(BsonDateTime::from_millis(dt_utc.timestamp_millis()));
-    }
-
-    println!("❌ Failed to parse timestamp: '{}'", timestamp_str);
-    Err(format!("Invalid timestamp format: '{}'", timestamp_str))
-}
-
-pub fn parse_iso_timestamp_or_now(timestamp_str: &str) -> BsonDateTime {
-    parse_iso_timestamp(timestamp_str).unwrap_or_else(|_| {
-        println!(
-            "⚠️ Failed to parse timestamp '{}', using current time",
-            timestamp_str
-        );
-        BsonDateTime::from_millis(Utc::now().timestamp_millis())
-    })
-}
-
-// ========== FROM CREATE IMPLEMENTATIONS ==========
-
-impl Vote {
-    pub fn from_create_vote(create_vote: CreateVote) -> Self {
-        Vote {
-            id: None,
-            voter_id: create_vote.voter_id,
-            username: create_vote.username,
-            fixture_id: create_vote.fixture_id,
-            home_team: create_vote.home_team,
-            away_team: create_vote.away_team,
-            draw: create_vote.draw,
-            selection: create_vote.selection,
-            vote_timestamp: BsonDateTime::from_millis(Utc::now().timestamp_millis()),
-            created_at: Some(BsonDateTime::from_millis(Utc::now().timestamp_millis())),
-        }
-    }
-}
-
-impl Like {
-    pub fn from_create_like(create_like: CreateLike) -> Self {
-        let current_time = BsonDateTime::from_millis(Utc::now().timestamp_millis());
-        println!(
-            "📝 Creating like for fixture: {}, user: {}, action: {}",
-            create_like.fixture_id, create_like.voter_id, create_like.action
-        );
-        Like {
-            id: None,
-            voter_id: create_like.voter_id,
-            username: create_like.username,
-            fixture_id: create_like.fixture_id,
-            action: create_like.action,
-            like_timestamp: current_time,
-            created_at: Some(current_time),
-        }
-    }
-}
-
-impl Comment {
-    pub fn from_create_comment(create_comment: CreateComment) -> Result<Self, String> {
-        let valid_selections = vec!["home_team", "draw", "away_team"];
-        if !valid_selections.contains(&create_comment.selection.as_str()) {
-            return Err(format!(
-                "Invalid selection: {}. Must be one of: home_team, draw, away_team",
-                create_comment.selection
-            ));
-        }
-
-        let comment_timestamp = match parse_iso_timestamp(&create_comment.timestamp) {
-            Ok(ts) => ts,
-            Err(e) => {
-                println!("⚠️ Timestamp parsing failed: {}, using current time", e);
-                BsonDateTime::from_millis(Utc::now().timestamp_millis())
-            }
-        };
-
-        Ok(Comment {
-            id: None,
-            voter_id: create_comment.voter_id,
-            username: create_comment.username,
-            fixture_id: create_comment.fixture_id,
-            selection: create_comment.selection,
-            comment: create_comment.comment,
-            timestamp: create_comment.timestamp,
-            comment_timestamp,
-            created_at: Some(BsonDateTime::from_millis(Utc::now().timestamp_millis())),
-            likes: Some(0),
-            replies: Some(Vec::new()),
-            seen_by: vec![], // ✅ NEW: Initialize empty seen_by
-        })
-    }
-}
-
-// ========== SERIALIZATION HELPERS ==========
-
-pub fn bson_datetime_to_iso_string(dt: &BsonDateTime) -> String {
-    let millis = dt.timestamp_millis();
-    let dt_chrono = Utc
-        .timestamp_millis_opt(millis)
-        .single()
-        .unwrap_or_else(|| Utc::now());
-    dt_chrono.to_rfc3339()
-}
-
-pub fn option_bson_datetime_to_iso_string(dt: &Option<BsonDateTime>) -> Option<String> {
-    dt.as_ref().map(bson_datetime_to_iso_string)
-}
-
-// ========== RESPONSE WRAPPERS ==========
-
-#[derive(Debug, Serialize)]
-pub struct ApiResponse<T> {
-    pub success: bool,
-    pub data: T,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub message: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct PaginatedResponse<T> {
-    pub data: Vec<T>,
-    pub total: i64,
-    pub page: u64,
-    pub limit: i64,
-}
-
-#[derive(Debug, Serialize)]
-pub struct ErrorResponse {
-    pub success: bool,
-    pub error: String,
-    pub message: String,
-    pub timestamp: String,
-}
-
-impl ErrorResponse {
-    pub fn new(error: &str, message: &str) -> Self {
-        ErrorResponse {
-            success: false,
-            error: error.to_string(),
-            message: message.to_string(),
-            timestamp: Utc::now().to_rfc3339(),
-        }
-    }
-}
-
 // ========== TOTAL COUNTS MODELS ==========
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -838,7 +683,267 @@ pub struct BatchFixtureCountsResponse {
     pub count: usize,
 }
 
-// ========== DEFAULT IMPLEMENTATIONS ==========
+// ============================================================================
+// VALIDATION HELPER
+// ============================================================================
+
+pub fn validate_selection(selection: &str) -> Result<(), String> {
+    let valid_selections = vec!["home_team", "draw", "away_team"];
+    if !valid_selections.contains(&selection) {
+        return Err(format!("Selection must be one of: {:?}", valid_selections));
+    }
+    Ok(())
+}
+
+// ============================================================================
+// TIMESTAMP PARSING
+// ============================================================================
+
+pub fn parse_iso_timestamp(timestamp_str: &str) -> Result<BsonDateTime, String> {
+    println!("🔍 Parsing timestamp: '{}'", timestamp_str);
+
+    if let Ok(dt) = DateTime::parse_from_rfc3339(timestamp_str) {
+        println!("✅ Parsed as RFC 3339: {}", dt);
+        return Ok(BsonDateTime::from_millis(dt.timestamp_millis()));
+    }
+
+    if timestamp_str.ends_with('Z') {
+        let without_z = timestamp_str.trim_end_matches('Z');
+
+        if let Ok(ndt) = NaiveDateTime::parse_from_str(without_z, "%Y-%m-%dT%H:%M:%S%.f") {
+            let dt_utc = DateTime::<Utc>::from_naive_utc_and_offset(ndt, Utc);
+            println!("✅ Parsed with milliseconds: {}", dt_utc);
+            return Ok(BsonDateTime::from_millis(dt_utc.timestamp_millis()));
+        }
+
+        if let Ok(ndt) = NaiveDateTime::parse_from_str(without_z, "%Y-%m-%dT%H:%M:%S") {
+            let dt_utc = DateTime::<Utc>::from_naive_utc_and_offset(ndt, Utc);
+            println!("✅ Parsed without milliseconds: {}", dt_utc);
+            return Ok(BsonDateTime::from_millis(dt_utc.timestamp_millis()));
+        }
+    }
+
+    if let Ok(dt) = DateTime::parse_from_str(timestamp_str, "%Y-%m-%dT%H:%M:%S%.f%:z") {
+        println!("✅ Parsed with timezone offset: {}", dt);
+        return Ok(BsonDateTime::from_millis(dt.timestamp_millis()));
+    }
+
+    if let Ok(dt) = DateTime::parse_from_str(timestamp_str, "%Y-%m-%dT%H:%M:%S%:z") {
+        println!("✅ Parsed with timezone offset (no ms): {}", dt);
+        return Ok(BsonDateTime::from_millis(dt.timestamp_millis()));
+    }
+
+    let dt_clean = timestamp_str.replace('T', " ").replace('Z', "");
+
+    if let Ok(ndt) = NaiveDateTime::parse_from_str(&dt_clean, "%Y-%m-%d %H:%M:%S%.f") {
+        let dt_utc = DateTime::<Utc>::from_naive_utc_and_offset(ndt, Utc);
+        println!("✅ Parsed as space-separated with ms: {}", dt_utc);
+        return Ok(BsonDateTime::from_millis(dt_utc.timestamp_millis()));
+    }
+
+    if let Ok(ndt) = NaiveDateTime::parse_from_str(&dt_clean, "%Y-%m-%d %H:%M:%S") {
+        let dt_utc = DateTime::<Utc>::from_naive_utc_and_offset(ndt, Utc);
+        println!("✅ Parsed as space-separated: {}", dt_utc);
+        return Ok(BsonDateTime::from_millis(dt_utc.timestamp_millis()));
+    }
+
+    if let Ok(ts) = timestamp_str.parse::<i64>() {
+        if timestamp_str.len() == 10 {
+            if let Some(dt) = DateTime::from_timestamp(ts, 0) {
+                println!("✅ Parsed as Unix seconds: {}", dt);
+                return Ok(BsonDateTime::from_millis(dt.timestamp_millis()));
+            }
+        } else if timestamp_str.len() >= 13 {
+            return Ok(BsonDateTime::from_millis(ts));
+        }
+    }
+
+    if let Ok(ndt) = NaiveDate::parse_from_str(timestamp_str, "%Y-%m-%d") {
+        let dt_utc = ndt.and_hms_opt(0, 0, 0).unwrap().and_utc();
+        println!("⚠️ Parsed as date only: {}", dt_utc);
+        return Ok(BsonDateTime::from_millis(dt_utc.timestamp_millis()));
+    }
+
+    println!("❌ Failed to parse timestamp: '{}'", timestamp_str);
+    Err(format!("Invalid timestamp format: '{}'", timestamp_str))
+}
+
+pub fn parse_iso_timestamp_or_now(timestamp_str: &str) -> BsonDateTime {
+    parse_iso_timestamp(timestamp_str).unwrap_or_else(|_| {
+        println!(
+            "⚠️ Failed to parse timestamp '{}', using current time",
+            timestamp_str
+        );
+        BsonDateTime::from_millis(Utc::now().timestamp_millis())
+    })
+}
+
+// ============================================================================
+// FROM CREATE IMPLEMENTATIONS
+// ============================================================================
+
+impl Vote {
+    pub fn from_create_vote(create_vote: CreateVote) -> Self {
+        Vote {
+            id: None,
+            voter_id: create_vote.voter_id,
+            username: create_vote.username,
+            fixture_id: create_vote.fixture_id,
+            home_team: create_vote.home_team,
+            away_team: create_vote.away_team,
+            draw: create_vote.draw,
+            selection: create_vote.selection,
+            vote_timestamp: BsonDateTime::from_millis(Utc::now().timestamp_millis()),
+            created_at: Some(BsonDateTime::from_millis(Utc::now().timestamp_millis())),
+        }
+    }
+}
+
+impl Like {
+    pub fn from_create_like(create_like: CreateLike) -> Self {
+        let current_time = BsonDateTime::from_millis(Utc::now().timestamp_millis());
+        println!(
+            "📝 Creating like for fixture: {}, user: {}, action: {}",
+            create_like.fixture_id, create_like.voter_id, create_like.action
+        );
+        Like {
+            id: None,
+            voter_id: create_like.voter_id,
+            username: create_like.username,
+            fixture_id: create_like.fixture_id,
+            action: create_like.action,
+            like_timestamp: current_time,
+            created_at: Some(current_time),
+        }
+    }
+}
+
+// ============================================================================
+// COMMENT IMPLEMENTATION - UPDATED
+// ============================================================================
+
+impl Comment {
+    pub fn from_create_comment(create_comment: CreateComment) -> Result<Self, String> {
+        // Validate selection
+        let valid_selections = vec!["home_team", "draw", "away_team"];
+        if !valid_selections.contains(&create_comment.selection.as_str()) {
+            return Err(format!(
+                "Invalid selection: {}. Must be one of: home_team, draw, away_team",
+                create_comment.selection
+            ));
+        }
+
+        // Validate that at least comment, image, or video is provided
+        let has_content = !create_comment.comment.is_empty()
+            || create_comment.is_image
+            || create_comment.is_video;
+
+        if !has_content {
+            return Err("Comment, image, or video is required".to_string());
+        }
+
+        let comment_timestamp = match parse_iso_timestamp(&create_comment.timestamp) {
+            Ok(ts) => ts,
+            Err(e) => {
+                println!("⚠️ Timestamp parsing failed: {}, using current time", e);
+                BsonDateTime::from_millis(Utc::now().timestamp_millis())
+            }
+        };
+
+        Ok(Comment {
+            id: None,
+            voter_id: create_comment.voter_id,
+            username: create_comment.username,
+            fixture_id: create_comment.fixture_id,
+            selection: create_comment.selection,
+            comment: create_comment.comment,
+            timestamp: create_comment.timestamp,
+            comment_timestamp,
+            created_at: Some(BsonDateTime::from_millis(Utc::now().timestamp_millis())),
+            likes: Some(0),
+            replies: Some(Vec::new()),
+            seen_by: vec![],
+            image_url: create_comment.image_url,
+            video_url: create_comment.video_url,
+            is_image: create_comment.is_image,
+            is_video: create_comment.is_video,
+            reply_to: create_comment.reply_to,
+        })
+    }
+
+    /// Check if a user has seen this comment
+    pub fn is_seen_by(&self, user_id: &str) -> bool {
+        self.seen_by.contains(&user_id.to_string())
+    }
+
+    /// Mark comment as seen by a user
+    pub fn mark_seen(&mut self, user_id: &str) {
+        let user_id_str = user_id.to_string();
+        if !self.seen_by.contains(&user_id_str) {
+            self.seen_by.push(user_id_str);
+        }
+    }
+}
+
+// ============================================================================
+// SERIALIZATION HELPERS
+// ============================================================================
+
+pub fn bson_datetime_to_iso_string(dt: &BsonDateTime) -> String {
+    let millis = dt.timestamp_millis();
+    let dt_chrono = Utc
+        .timestamp_millis_opt(millis)
+        .single()
+        .unwrap_or_else(|| Utc::now());
+    dt_chrono.to_rfc3339()
+}
+
+pub fn option_bson_datetime_to_iso_string(dt: &Option<BsonDateTime>) -> Option<String> {
+    dt.as_ref().map(bson_datetime_to_iso_string)
+}
+
+// ============================================================================
+// RESPONSE WRAPPERS
+// ============================================================================
+
+#[derive(Debug, Serialize)]
+pub struct ApiResponse<T> {
+    pub success: bool,
+    pub data: T,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PaginatedResponse<T> {
+    pub data: Vec<T>,
+    pub total: i64,
+    pub page: u64,
+    pub limit: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ErrorResponse {
+    pub success: bool,
+    pub error: String,
+    pub message: String,
+    pub timestamp: String,
+}
+
+impl ErrorResponse {
+    pub fn new(error: &str, message: &str) -> Self {
+        ErrorResponse {
+            success: false,
+            error: error.to_string(),
+            message: message.to_string(),
+            timestamp: Utc::now().to_rfc3339(),
+        }
+    }
+}
+
+// ============================================================================
+// DEFAULT IMPLEMENTATIONS
+// ============================================================================
 
 impl Default for VoteResponse {
     fn default() -> Self {

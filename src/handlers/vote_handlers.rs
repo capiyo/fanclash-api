@@ -1,8 +1,10 @@
+use crate::services::cloudinary::CloudinaryService;
 use crate::services::fcm_service;
 use axum::{
     extract::{Path, Query, State},
     response::Json,
 };
+use axum_extra::extract::Multipart;
 use bson::{doc, oid::ObjectId, DateTime as BsonDateTime};
 use chrono::{Duration, Utc};
 use futures_util::TryStreamExt;
@@ -18,7 +20,7 @@ use crate::{
         parse_iso_timestamp_or_now, validate_selection, BulkVoteRequest, BulkVoteResponse, Comment,
         CommentQuery, CommentResponse, CommentStats, CreateComment, CreateLike, CreateVote,
         FixtureCountsResponse, FixtureStats, Like, LikeResponse, LikeStats,
-        MarkCommentsSeenRequest, TotalCountsResponse, UserVoteStatus, Vote, VoteQuery,
+        MarkCommentsSeenRequest, ReplyData, TotalCountsResponse, UserVoteStatus, Vote, VoteQuery,
         VoteResponse, VoteStats,
     },
     state::AppState,
@@ -52,8 +54,125 @@ async fn get_all_user_ids(state: &AppState, exclude_user_id: Option<&str>) -> Ve
     }
 }
 
+// ============================================================================
+// MEDIA UPLOAD HANDLER (NEW - for chat images/videos)
+// ============================================================================
+
 // ========== MARK COMMENTS AS SEEN (READ RECEIPTS) ==========
-// ========== MARK COMMENTS AS SEEN (READ RECEIPTS) ==========
+// Make sure you have this import at the top of vote_handler.rs
+pub async fn upload_chat_media(
+    State(state): State<AppState>,
+    mut multipart: Multipart,
+) -> Result<Json<serde_json::Value>> {
+    println!("📤 Processing chat media upload...");
+
+    let mut file_data: Vec<u8> = Vec::new();
+    let mut file_name = String::new();
+    let mut media_type = String::new();
+
+    // Process each field in the multipart form
+    while let Ok(Some(field)) = multipart.next_field().await {
+        let name = field.name().unwrap_or("").to_string();
+
+        match name.as_str() {
+            "file" => {
+                file_name = field.file_name().unwrap_or("upload").to_string();
+                match field.bytes().await {
+                    Ok(bytes) => {
+                        file_data = bytes.to_vec();
+                        println!(
+                            "📁 Received file: {} ({} bytes)",
+                            file_name,
+                            file_data.len()
+                        );
+                    }
+                    Err(e) => {
+                        eprintln!("❌ Failed to read file data: {}", e);
+                        return Err(AppError::ValidationError(format!(
+                            "Failed to read file: {}",
+                            e
+                        )));
+                    }
+                }
+            }
+            "type" => match field.text().await {
+                Ok(text) => {
+                    media_type = text.trim().to_lowercase();
+                    println!("📋 Media type: {}", media_type);
+                }
+                Err(e) => {
+                    eprintln!("❌ Failed to read media type: {}", e);
+                    return Err(AppError::ValidationError(
+                        "Failed to read media type".to_string(),
+                    ));
+                }
+            },
+            _ => {}
+        }
+    }
+
+    // Validate file exists
+    if file_data.is_empty() {
+        return Err(AppError::ValidationError("No file provided".to_string()));
+    }
+
+    // Validate media type
+    if media_type.is_empty() {
+        return Err(AppError::ValidationError(
+            "Media type (image/video) is required".to_string(),
+        ));
+    }
+
+    if media_type != "image" && media_type != "video" {
+        return Err(AppError::ValidationError(
+            "Invalid media type. Must be 'image' or 'video'".to_string(),
+        ));
+    }
+
+    // Validate file size
+    let max_size = if media_type == "image" {
+        10 * 1024 * 1024 // 10MB for images
+    } else {
+        50 * 1024 * 1024 // 50MB for videos
+    };
+
+    if file_data.len() > max_size {
+        return Err(AppError::ValidationError(format!(
+            "File too large. Max {}MB for {}",
+            max_size / (1024 * 1024),
+            media_type
+        )));
+    }
+
+    // Upload to Cloudinary based on media type
+    let url = match media_type.as_str() {
+        "image" => state.cloudinary.upload_image(file_data, &file_name).await,
+        "video" => state.cloudinary.upload_video(file_data, &file_name).await,
+        _ => unreachable!(),
+    };
+
+    match url {
+        Ok(secure_url) => {
+            println!("✅ Media uploaded to Cloudinary: {}", secure_url);
+            Ok(Json(json!({
+                "success": true,
+                "url": secure_url,
+                "secure_url": secure_url,
+                "media_type": media_type,
+                "message": format!("{} uploaded successfully", media_type)
+            })))
+        }
+        Err(e) => {
+            eprintln!("❌ Cloudinary upload failed: {}", e);
+            Err(AppError::ValidationError(format!("Upload failed: {}", e)))
+        }
+    }
+}
+
+// ============================================================================
+// MEDIA UPLOAD HANDLER (for chat images/videos)
+// ============================================================================
+
 pub async fn mark_comments_seen(
     State(state): State<AppState>,
     Json(payload): Json<MarkCommentsSeenRequest>,
@@ -66,7 +185,6 @@ pub async fn mark_comments_seen(
     let collection: Collection<Comment> = state.db.collection("room");
 
     let filter = if let Some(comment_ids) = &payload.comment_ids {
-        // Convert string IDs to ObjectIds
         let mut object_ids = Vec::new();
         for id_str in comment_ids {
             if let Ok(oid) = ObjectId::parse_str(id_str) {
@@ -80,7 +198,6 @@ pub async fn mark_comments_seen(
             "seenBy": { "$ne": &payload.user_id }
         }
     } else {
-        // Mark all unseen comments in this fixture as seen
         doc! {
             "fixtureId": &payload.fixture_id,
             "voterId": { "$ne": &payload.user_id },
@@ -129,29 +246,24 @@ pub async fn create_vote(
         payload.username, payload.voter_id
     );
 
-    // Validate payload
     payload
         .validate()
         .map_err(|e| AppError::ValidationError(e.to_string()))?;
 
-    // Validate selection
     validate_selection(&payload.selection).map_err(|e| AppError::ValidationError(e))?;
 
-    // Validate draw field is "draw"
     if payload.draw != "draw" {
         return Err(AppError::ValidationError(
             "draw field must be 'draw'".to_string(),
         ));
     }
 
-    // Validate fixture_id is provided
     if payload.fixture_id.trim().is_empty() {
         return Err(AppError::ValidationError(
             "fixtureId is required".to_string(),
         ));
     }
 
-    // ========== CHECK IF USER ALREADY VOTED USING GAMES COLLECTION (FAST) ==========
     let games_collection: Collection<Game> = state.db.collection("games");
     let existing_voter_filter = doc! {
         "match_id": &payload.fixture_id,
@@ -168,9 +280,7 @@ pub async fn create_vote(
             data: None,
         }));
     }
-    // ================================================================================
 
-    // Create vote document for history/audit (keep this for historical records)
     let vote_collection: Collection<Vote> = state.db.collection("votes");
     let vote = Vote {
         id: None,
@@ -188,7 +298,6 @@ pub async fn create_vote(
     let insert_result = vote_collection.insert_one(vote).await?;
     let vote_id = insert_result.inserted_id.as_object_id().unwrap().to_hex();
 
-    // ========== UPDATE GAMES COLLECTION (VOTE COUNTER + VOTERS ARRAY) ==========
     let games_update_filter = doc! { "match_id": &payload.fixture_id };
     let games_update = doc! {
         "$inc": { "votes": 1 },
@@ -216,9 +325,7 @@ pub async fn create_vote(
             eprintln!("⚠️ Failed to update games collection: {}", e);
         }
     }
-    // =============================================================================
 
-    // Fetch the inserted vote (for response)
     let filter = doc! { "_id": insert_result.inserted_id };
     let inserted_vote = vote_collection
         .find_one(filter)
@@ -230,7 +337,6 @@ pub async fn create_vote(
         vote_id, payload.username
     );
 
-    // ===== SEND FCM NOTIFICATIONS TO ALL USERS =====
     let state_clone = state.clone();
     let payload_clone = payload.clone();
 
@@ -320,7 +426,6 @@ pub async fn bulk_create_votes(
     let mut votes_to_insert = Vec::new();
     let now = BsonDateTime::from_chrono(Utc::now());
 
-    // Validate and prepare votes
     for (index, vote_data) in payload.votes.into_iter().enumerate() {
         match vote_data.validate() {
             Ok(_) => {
@@ -388,7 +493,7 @@ pub async fn bulk_create_votes(
         failed_votes,
     }))
 }
-// Get unread comment counts for a user across all fixtures
+
 pub async fn get_user_unread_counts(
     State(state): State<AppState>,
     Path(user_id): Path<String>,
@@ -397,7 +502,6 @@ pub async fn get_user_unread_counts(
 
     let collection: Collection<Comment> = state.db.collection("room");
 
-    // Aggregate: group by fixture_id and count unseen comments
     let pipeline = vec![
         doc! {
             "$match": {
@@ -413,20 +517,15 @@ pub async fn get_user_unread_counts(
         },
     ];
 
-    // Execute aggregation cursor
     let mut cursor = collection.aggregate(pipeline).await?;
-
     let mut counts = std::collections::HashMap::new();
 
-    // Iterate through cursor results - each result is a bson::Document
     while let Some(doc) = cursor.try_next().await? {
-        // Extract fixture_id from "_id" field
         let fixture_id = doc
             .get("_id")
             .and_then(|id| id.as_str())
             .map(|s| s.to_string());
 
-        // Extract count from "count" field
         let count = doc.get("count").and_then(|c| c.as_i64()).unwrap_or(0);
 
         if let Some(id) = fixture_id {
@@ -683,7 +782,6 @@ pub async fn create_like(
             payload.fixture_id, payload.username
         );
 
-        // ===== SEND LIKE NOTIFICATIONS TO ALL USERS =====
         let state_clone = state.clone();
         let payload_clone = payload.clone();
 
@@ -852,7 +950,7 @@ pub async fn delete_like(
     }))
 }
 
-// ========== COMMENT HANDLERS ==========
+// ========== COMMENT HANDLERS - UPDATED WITH MEDIA & REPLY ==========
 
 pub async fn create_comment(
     State(state): State<AppState>,
@@ -863,7 +961,6 @@ pub async fn create_comment(
         payload.username, payload.voter_id
     );
 
-    // ========== VALIDATION ==========
     payload
         .validate()
         .map_err(|e| AppError::ValidationError(e.to_string()))?;
@@ -882,10 +979,18 @@ pub async fn create_comment(
         ));
     }
 
-    // ========== CREATE COMMENT DOCUMENT ==========
+    // NEW: Check if at least one of comment, image, or video is provided
+    let has_content = !payload.comment.is_empty() || payload.is_image || payload.is_video;
+    if !has_content {
+        return Err(AppError::ValidationError(
+            "Comment, image, or video is required".to_string(),
+        ));
+    }
+
     let collection: Collection<Comment> = state.db.collection("room");
     let comment_timestamp = parse_iso_timestamp_or_now(&payload.timestamp);
 
+    // NEW: Build comment with media and reply fields
     let comment = Comment {
         id: None,
         voter_id: payload.voter_id.clone(),
@@ -898,14 +1003,20 @@ pub async fn create_comment(
         created_at: Some(BsonDateTime::from_chrono(Utc::now())),
         likes: Some(0),
         replies: Some(Vec::new()),
-        seen_by: vec![], // ✅ Initialize empty seen_by array for read receipts
+        seen_by: vec![],
+        // NEW: Media fields
+        image_url: payload.image_url.clone(),
+        video_url: payload.video_url.clone(),
+        is_image: payload.is_image,
+        is_video: payload.is_video,
+        // NEW: Reply field
+        reply_to: payload.reply_to.clone(),
     };
 
     let insert_result = collection.insert_one(comment).await?;
     let comment_id = insert_result.inserted_id.as_object_id().unwrap().to_hex();
     let comment_id_for_closure = comment_id.clone();
 
-    // ========== FETCH INSERTED COMMENT FOR RESPONSE ==========
     let filter = doc! { "_id": insert_result.inserted_id };
     let inserted_comment = collection
         .find_one(filter)
@@ -917,7 +1028,6 @@ pub async fn create_comment(
         comment_id, payload.username
     );
 
-    // ========== UPDATE COMMENT COUNTER IN GAMES COLLECTION ==========
     let games_collection: Collection<Game> = state.db.collection("games");
     let games_update_filter = doc! { "match_id": &payload.fixture_id };
     let games_update = doc! { "$inc": { "comments": 1 } };
@@ -925,7 +1035,6 @@ pub async fn create_comment(
         .update_one(games_update_filter, games_update)
         .await;
 
-    // ========== GET FIXTURE DETAILS FOR NOTIFICATION ==========
     let game_filter = doc! { "match_id": &payload.fixture_id };
     let game = games_collection.find_one(game_filter).await;
     let (home_team, away_team) = match game {
@@ -933,7 +1042,7 @@ pub async fn create_comment(
         _ => ("Unknown".to_string(), "Unknown".to_string()),
     };
 
-    // ========== SEND FCM NOTIFICATIONS TO ALL COMRADES ==========
+    // NEW: Enhanced FCM notifications with media and reply info
     let state_clone = state.clone();
     let payload_clone = payload.clone();
     let comment_text = payload.comment.clone();
@@ -944,19 +1053,28 @@ pub async fn create_comment(
         comment_text.clone()
     };
     let commenter_name = payload_clone.username.clone();
+    let has_image = payload_clone.is_image;
+    let has_video = payload_clone.is_video;
+    let reply_to = payload_clone.reply_to.clone();
 
     tokio::spawn(async move {
         if let Ok(fcm_service) = fcm_service::init_fcm_service().await {
-            // Get all users EXCEPT the commenter
             let all_user_ids = get_all_user_ids(&state_clone, Some(&payload_clone.voter_id)).await;
 
             if !all_user_ids.is_empty() {
-                println!(
-                    "📱 Sending comment notifications to {} users",
-                    all_user_ids.len()
-                );
+                let media_emoji = if has_image {
+                    "📷 "
+                } else if has_video {
+                    "🎥 "
+                } else {
+                    ""
+                };
+                let reply_text = if let Some(reply) = reply_to {
+                    format!(" (replying to @{})", reply.username)
+                } else {
+                    "".to_string()
+                };
 
-                // Prepare notification payload
                 let notification_payload = serde_json::json!({
                     "fixture_id": payload_clone.fixture_id,
                     "comment_id": comment_id_for_closure,
@@ -965,6 +1083,11 @@ pub async fn create_comment(
                     "voter_selection": payload_clone.selection,
                     "comment": comment_text,
                     "comment_preview": short_comment,
+                    "imageUrl": payload_clone.image_url,
+                    "videoUrl": payload_clone.video_url,
+                    "isImage": payload_clone.is_image,
+                    "isVideo": payload_clone.is_video,
+                    "replyTo": payload_clone.reply_to,
                     "home_team": home_team,
                     "away_team": away_team,
                     "fixture_name": fixture_name,
@@ -973,36 +1096,25 @@ pub async fn create_comment(
                     "timestamp": Utc::now().to_rfc3339(),
                 });
 
-                // Send to all users
-                let result = fcm_service
+                let _ = fcm_service
                     .send_to_multiple_users(
                         &state_clone,
                         all_user_ids,
-                        &format!("💬 @{} commented", commenter_name),
+                        &format!("💬 @{}{}{}", commenter_name, media_emoji, reply_text),
                         &format!("\"{}\" on {}", short_comment, fixture_name),
                         notification_payload,
                         "comment_notification",
                     )
                     .await;
-
-                match result {
-                    Ok(sent_count) => println!("✅ Sent {} comment notifications", sent_count),
-                    Err(e) => eprintln!("❌ Failed to send comment notifications: {}", e),
-                }
-            } else {
-                println!("📱 No other users to notify");
             }
-        } else {
-            eprintln!("❌ Failed to initialize FCM service");
         }
     });
 
-    // ========== WEB SOCKET BROADCAST ==========
-    // Get broadcaster for this fixture and send real-time update
+    // NEW: WebSocket broadcast with media and reply data
     let tx = state.get_or_create_broadcaster(&payload.fixture_id);
 
     let ws_message = serde_json::json!({
-        "type": "comment.new",
+        "type": "chat.message",
         "payload": {
             "comment_id": comment_id,
             "voter_id": payload.voter_id,
@@ -1010,6 +1122,11 @@ pub async fn create_comment(
             "fixture_id": payload.fixture_id,
             "selection": payload.selection,
             "comment": payload.comment,
+            "imageUrl": payload.image_url,
+            "videoUrl": payload.video_url,
+            "isImage": payload.is_image,
+            "isVideo": payload.is_video,
+            "replyTo": payload.reply_to,
             "timestamp": Utc::now().to_rfc3339(),
             "likes": 0,
         },
@@ -1024,7 +1141,6 @@ pub async fn create_comment(
         );
     }
 
-    // ========== RETURN RESPONSE ==========
     Ok(Json(CommentResponse {
         success: true,
         message: "Comment submitted successfully".to_string(),
@@ -1083,7 +1199,6 @@ pub async fn get_fixture_comments(
     let all_comments: Vec<Comment> = cursor.try_collect().await?;
 
     let total_comments = all_comments.len() as i64;
-
     let home_comments = all_comments
         .iter()
         .filter(|c| c.selection == "home_team")
@@ -1096,7 +1211,6 @@ pub async fn get_fixture_comments(
         .iter()
         .filter(|c| c.selection == "away_team")
         .count() as i64;
-
     let recent_comments: Vec<Comment> = all_comments.into_iter().take(10).collect();
 
     let stats = CommentStats {

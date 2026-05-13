@@ -29,7 +29,7 @@ impl CloudinaryService {
 
         println!("🔧 Cloudinary Configuration:");
         println!("   Cloud Name: {}", cloud_name);
-        println!("   API Key: {}...", &api_key[0..8]); // Show first 8 chars only for security
+        println!("   API Key: {}...", &api_key[0..8]);
         println!("   API Secret: {}...", &api_secret[0..8]);
         println!("   Upload Preset: {}", upload_preset);
 
@@ -40,6 +40,133 @@ impl CloudinaryService {
             upload_preset,
         })
     }
+
+    // ============================================================================
+    // NEW METHODS FOR CHAT MEDIA (Image & Video)
+    // ============================================================================
+
+    /// Upload image for chat messages
+    pub async fn upload_image(&self, file_data: Vec<u8>, file_name: &str) -> Result<String> {
+        self.upload_to_cloudinary(file_data, file_name, "image")
+            .await
+    }
+
+    /// Upload video for chat messages
+    pub async fn upload_video(&self, file_data: Vec<u8>, file_name: &str) -> Result<String> {
+        self.upload_to_cloudinary(file_data, file_name, "video")
+            .await
+    }
+
+    /// Generic upload to Cloudinary for both images and videos
+    async fn upload_to_cloudinary(
+        &self,
+        file_data: Vec<u8>,
+        file_name: &str,
+        resource_type: &str,
+    ) -> Result<String> {
+        println!("📤 Uploading {} to Cloudinary...", resource_type);
+        println!("   File name: {}", file_name);
+        println!("   File size: {} bytes", file_data.len());
+        println!("   Resource type: {}", resource_type);
+
+        let upload_url = format!(
+            "https://api.cloudinary.com/v1_1/{}/{}/upload",
+            self.cloud_name, resource_type
+        );
+
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(60)) // Longer timeout for videos
+            .build()
+            .map_err(|e| AppError::CloudinaryError(format!("Failed to create client: {}", e)))?;
+
+        // Determine MIME type
+        let mime_type = if resource_type == "image" {
+            infer::get(&file_data)
+                .map(|info| info.mime_type())
+                .unwrap_or("image/jpeg")
+        } else {
+            // For videos, try to detect or default to mp4
+            if file_name.ends_with(".mp4") {
+                "video/mp4"
+            } else if file_name.ends_with(".mov") {
+                "video/quicktime"
+            } else if file_name.ends_with(".webm") {
+                "video/webm"
+            } else {
+                "video/mp4"
+            }
+        };
+
+        println!("   Detected MIME type: {}", mime_type);
+
+        // Build multipart form
+        let form = multipart::Form::new()
+            .text("upload_preset", self.upload_preset.clone())
+            .part(
+                "file",
+                multipart::Part::bytes(file_data)
+                    .file_name(file_name.to_string())
+                    .mime_str(mime_type)
+                    .map_err(|e| {
+                        AppError::CloudinaryError(format!("Failed to set MIME type: {}", e))
+                    })?,
+            );
+
+        // Send request
+        let response = client
+            .post(&upload_url)
+            .multipart(form)
+            .send()
+            .await
+            .map_err(|e| AppError::CloudinaryError(format!("Network error: {}", e)))?;
+
+        let status = response.status();
+        println!("   Response status: {}", status);
+
+        let response_text = response
+            .text()
+            .await
+            .map_err(|e| AppError::CloudinaryError(format!("Failed to read response: {}", e)))?;
+
+        println!("   Raw response: {}", response_text);
+
+        let result: Value = serde_json::from_str(&response_text).map_err(|e| {
+            AppError::CloudinaryError(format!(
+                "Failed to parse JSON: {} - Response: {}",
+                e, response_text
+            ))
+        })?;
+
+        // Check for Cloudinary error
+        if let Some(error) = result.get("error") {
+            let error_msg = error["message"]
+                .as_str()
+                .unwrap_or("Unknown Cloudinary error");
+            println!("❌ Cloudinary error: {}", error_msg);
+            return Err(AppError::CloudinaryError(format!(
+                "Cloudinary error: {}",
+                error_msg
+            )));
+        }
+
+        // Get secure URL
+        let secure_url = result["secure_url"]
+            .as_str()
+            .ok_or_else(|| {
+                println!("❌ No secure_url in response");
+                AppError::CloudinaryError("No secure URL in Cloudinary response".into())
+            })?
+            .to_string();
+
+        println!("✅ Upload successful!");
+        println!("   URL: {}", secure_url);
+
+        Ok(secure_url)
+    }
+
+    // ============================================================================
+    // EXISTING METHODS (Keep all your original code below)
+    // ============================================================================
 
     /// Upload image using upload preset (unsigned - simpler)
     pub async fn upload_image_with_preset(
@@ -65,25 +192,21 @@ impl CloudinaryService {
             .build()
             .map_err(|e| AppError::CloudinaryError(format!("Failed to create client: {}", e)))?;
 
-        // Build multipart form
         let mut form = multipart::Form::new()
             .text("upload_preset", self.upload_preset.clone())
             .text("folder", folder.to_string());
 
-        // Add public_id if provided
         if let Some(pid) = public_id {
             println!("   Public ID: {}", pid);
             form = form.text("public_id", pid.to_string());
         }
 
-        // Determine MIME type
         let mime_type = infer::get(&image_data)
             .map(|info| info.mime_type())
             .unwrap_or("image/jpeg");
 
         println!("   Detected MIME type: {}", mime_type);
 
-        // Add file part
         form = form.part(
             "file",
             multipart::Part::bytes(image_data.to_vec())
@@ -96,7 +219,6 @@ impl CloudinaryService {
 
         println!("   Sending request to Cloudinary...");
 
-        // Send request with timeout
         let response = client
             .post(&upload_url)
             .multipart(form)
@@ -107,7 +229,6 @@ impl CloudinaryService {
         let status = response.status();
         println!("   Response status: {}", status);
 
-        // Get response text first for debugging
         let response_text = response
             .text()
             .await
@@ -115,7 +236,6 @@ impl CloudinaryService {
 
         println!("   Raw response: {}", response_text);
 
-        // Parse JSON
         let result: Value = serde_json::from_str(&response_text).map_err(|e| {
             AppError::CloudinaryError(format!(
                 "Failed to parse JSON: {} - Response: {}",
@@ -125,7 +245,6 @@ impl CloudinaryService {
 
         println!("   Parsed response: {:?}", result);
 
-        // Check for Cloudinary error
         if let Some(error) = result.get("error") {
             let error_msg = error["message"]
                 .as_str()
@@ -133,7 +252,6 @@ impl CloudinaryService {
 
             println!("❌ Cloudinary error: {}", error_msg);
 
-            // Check for specific error messages
             if error_msg.contains("Invalid api_key") {
                 return Err(AppError::CloudinaryError(
                     "Invalid Cloudinary API key. Please check your credentials.".into(),
@@ -151,7 +269,6 @@ impl CloudinaryService {
             )));
         }
 
-        // Get secure URL
         let secure_url = result["secure_url"]
             .as_str()
             .ok_or_else(|| {
@@ -186,7 +303,6 @@ impl CloudinaryService {
 
         let timestamp = chrono::Utc::now().timestamp().to_string();
 
-        // Create parameters to sign
         let mut params_to_sign = vec![
             format!("folder={}", folder),
             format!("timestamp={}", timestamp),
@@ -196,7 +312,6 @@ impl CloudinaryService {
             params_to_sign.push(format!("public_id={}", pid));
         }
 
-        // Sort parameters (Cloudinary requirement)
         params_to_sign.sort();
         let params_string = params_to_sign.join("&");
         let signature_string = format!("{}{}", params_string, self.api_secret);
@@ -215,19 +330,16 @@ impl CloudinaryService {
             .timeout(std::time::Duration::from_secs(30))
             .build()?;
 
-        // Build multipart form
         let mut form = multipart::Form::new()
             .text("api_key", self.api_key.clone())
             .text("timestamp", timestamp)
             .text("signature", signature.clone())
             .text("folder", folder.to_string());
 
-        // Add public_id if provided
         if let Some(pid) = public_id {
             form = form.text("public_id", pid.to_string());
         }
 
-        // Add file
         form = form.part(
             "file",
             multipart::Part::bytes(image_data.to_vec())
@@ -235,7 +347,6 @@ impl CloudinaryService {
                 .mime_str("image/jpeg")?,
         );
 
-        // Send request
         let response = client.post(&upload_url).multipart(form).send().await?;
 
         let response_text = response.text().await?;
@@ -265,7 +376,7 @@ impl CloudinaryService {
         Ok((secure_url, public_id))
     }
 
-    // Keep other methods as they are...
+    /// Delete image from Cloudinary
     pub async fn delete_image(&self, public_id: &str) -> Result<()> {
         let timestamp = chrono::Utc::now().timestamp().to_string();
 
@@ -302,6 +413,7 @@ impl CloudinaryService {
         Ok(())
     }
 
+    /// Generate transformed URL for image
     pub fn generate_transformed_url(&self, public_id: &str, transformations: &str) -> String {
         format!(
             "https://res.cloudinary.com/{}/image/upload/{}/{}",
@@ -309,6 +421,7 @@ impl CloudinaryService {
         )
     }
 
+    /// Generate thumbnail URL for image
     pub fn generate_thumbnail_url(&self, public_id: &str, width: u32, height: u32) -> String {
         let transformations = format!("c_fill,w_{},h_{},q_auto", width, height);
         self.generate_transformed_url(public_id, &transformations)

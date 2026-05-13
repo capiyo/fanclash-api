@@ -7,6 +7,11 @@ use crate::state::AppState;
 
 pub fn vote_routes() -> Router<AppState> {
     Router::new()
+        // ========== 🆕 CHAT MEDIA UPLOAD ROUTE ==========
+        .route(
+            "/upload/chat",
+            post(crate::handlers::vote_handlers::upload_chat_media),
+        )
         // ========== VOTE ROUTES ==========
         .route("/vote", post(crate::handlers::vote_handlers::create_vote))
         .route("/votes", get(crate::handlers::vote_handlers::get_votes))
@@ -38,6 +43,15 @@ pub fn vote_routes() -> Router<AppState> {
             "/votes/:vote_id",
             delete(crate::handlers::vote_handlers::delete_vote),
         )
+        // ========== COMMENT READ RECEIPTS ROUTE ==========
+        .route(
+            "/comments/seen",
+            post(crate::handlers::vote_handlers::mark_comments_seen),
+        )
+        .route(
+            "/user/:user_id/unread-counts",
+            get(crate::handlers::vote_handlers::get_user_unread_counts),
+        )
         // ========== LIKE ROUTES ==========
         .route("/like", post(crate::handlers::vote_handlers::create_like))
         .route(
@@ -61,7 +75,6 @@ pub fn vote_routes() -> Router<AppState> {
             "/comment",
             post(crate::handlers::vote_handlers::create_comment),
         )
-        // add to vote_routes() at the top of the fn body:
         .route(
             "/ws/comments",
             get(crate::handlers::ws_handler::ws_comments_handler),
@@ -90,58 +103,49 @@ pub fn vote_routes() -> Router<AppState> {
             "/comments/:comment_id/like",
             post(crate::handlers::vote_handlers::like_comment),
         )
-        // ========== 🆕 SUB-FIXTURE (PROP BETS) ROUTES ==========
-        // Get all sub-fixtures for a fixture
+        // ========== SUB-FIXTURE (PROP BETS) ROUTES ==========
         .route(
             "/sub-fixtures",
             get(crate::handlers::sub_fixture_handler::get_sub_fixtures),
         )
-        // Get a single sub-fixture by ID
         .route(
             "/sub-fixture/:id",
             get(crate::handlers::sub_fixture_handler::get_sub_fixture_by_id),
         )
-        // Submit a vote on a sub-fixture
         .route(
             "/sub-fixture",
             post(crate::handlers::sub_fixture_handler::submit_sub_fixture_vote),
         )
-        // Get statistics for a sub-fixture
         .route(
             "/sub-fixture/:id/stats",
             get(crate::handlers::sub_fixture_handler::get_sub_fixture_stats),
         )
-        // Get voters for a sub-fixture (optionally filtered by selection)
         .route(
             "/sub-fixture/:id/voters",
             get(crate::handlers::sub_fixture_handler::get_sub_fixture_voters),
         )
-        // Get user's votes for a specific fixture (all sub-fixtures)
         .route(
             "/user/:user_id/fixture/:fixture_id/sub-votes",
             get(crate::handlers::sub_fixture_handler::get_user_sub_fixture_votes),
         )
-        // Get all votes for a sub-fixture (admin)
         .route(
             "/sub-fixture/:id/all-votes",
             get(crate::handlers::sub_fixture_handler::get_all_sub_fixture_votes),
         )
-        // Get vote counts for a sub-fixture (for chart display)
         .route(
             "/sub-fixture/:id/counts",
             get(crate::handlers::sub_fixture_handler::get_sub_fixture_vote_counts),
         )
-        // Check if user has voted on a specific sub-fixture
         .route(
             "/sub-fixture/:id/user/:user_id",
             get(crate::handlers::sub_fixture_handler::check_user_sub_fixture_vote),
         )
-        // Get all sub-fixtures for a fixture with user votes included
         .route(
             "/sub-fixtures/fixture/:fixture_id/user/:user_id",
             get(crate::handlers::sub_fixture_handler::get_sub_fixtures_with_user_votes),
         )
 }
+
 pub fn ws_routes() -> Router<AppState> {
     Router::new().route(
         "/comments",
@@ -200,13 +204,11 @@ pub fn vote_stats_routes() -> Router<AppState> {
             "/stats/combined/bulk",
             post(crate::handlers::vote_handlers::get_combined_stats_for_multiple_fixtures),
         )
-        // ========== 🆕 SUB-FIXTURE STATS ROUTES ==========
-        // Get stats for multiple sub-fixtures (bulk)
+        // ========== SUB-FIXTURE STATS ROUTES ==========
         .route(
             "/stats/sub-fixtures/bulk",
             post(crate::handlers::sub_fixture_handler::get_bulk_sub_fixture_stats),
         )
-        // Get trending sub-fixtures (most votes)
         .route(
             "/stats/sub-fixtures/trending",
             get(crate::handlers::sub_fixture_handler::get_trending_sub_fixtures),
@@ -229,7 +231,7 @@ pub fn vote_admin_routes() -> Router<AppState> {
             "/admin/stats/overview",
             get(crate::handlers::vote_handlers::get_overview_stats),
         )
-        // ========== 🆕 SUB-FIXTURE ADMIN ROUTES ==========
+        // ========== SUB-FIXTURE ADMIN ROUTES ==========
         .route(
             "/admin/sub-fixtures",
             post(crate::handlers::sub_fixture_handler::create_sub_fixture),
@@ -240,15 +242,13 @@ pub fn vote_admin_routes() -> Router<AppState> {
         )
 }
 
-// ========== 🔥 NEW FCM NOTIFICATION ROUTES ==========
+// ========== FCM NOTIFICATION ROUTES ==========
 pub fn notification_routes() -> Router<AppState> {
     Router::new()
-        // Token registration
         .route(
             "/register-token",
             post(crate::handlers::notification_handler::register_token),
         )
-        // Sending notifications
         .route(
             "/send",
             post(crate::handlers::notification_handler::send_notification),
@@ -257,17 +257,14 @@ pub fn notification_routes() -> Router<AppState> {
             "/send-bulk",
             post(crate::handlers::notification_handler::send_bulk_notifications),
         )
-        // Getting user notifications
         .route(
             "/user/:user_id",
             get(crate::handlers::notification_handler::get_user_notifications),
         )
-        // Marking as read
         .route(
             "/mark-read",
             post(crate::handlers::notification_handler::mark_notifications_read),
         )
-        // Notification preferences
         .route(
             "/preferences/:user_id",
             get(crate::handlers::notification_handler::get_notification_preferences),
@@ -276,7 +273,6 @@ pub fn notification_routes() -> Router<AppState> {
             "/preferences",
             post(crate::handlers::notification_handler::update_notification_preferences),
         )
-        // Admin cleanup
         .route(
             "/cleanup",
             post(crate::handlers::notification_handler::cleanup_expired_tokens),
