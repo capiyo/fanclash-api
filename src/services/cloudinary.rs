@@ -8,7 +8,8 @@ pub struct CloudinaryService {
     cloud_name: String,
     api_key: String,
     api_secret: String,
-    upload_preset: String,
+    upload_preset: String,       // For images
+    video_upload_preset: String, // NEW: For videos
 }
 
 impl CloudinaryService {
@@ -27,33 +28,39 @@ impl CloudinaryService {
         let upload_preset = env::var("CLOUDINARY_UPLOAD_PRESET")
             .unwrap_or_else(|_| "rust_backend_upload".to_string());
 
+        // NEW: Read video upload preset from env
+        let video_upload_preset =
+            env::var("CLOUDINARY_VIDEO_UPLOAD_PRESET").unwrap_or_else(|_| "clash_vida".to_string()); // ← Your video preset
+
         println!("🔧 Cloudinary Configuration:");
         println!("   Cloud Name: {}", cloud_name);
         println!("   API Key: {}...", &api_key[0..8]);
         println!("   API Secret: {}...", &api_secret[0..8]);
-        println!("   Upload Preset: {}", upload_preset);
+        println!("   Image Upload Preset: {}", upload_preset);
+        println!("   Video Upload Preset: {}", video_upload_preset);
 
         Ok(Self {
             cloud_name,
             api_key,
             api_secret,
             upload_preset,
+            video_upload_preset,
         })
     }
 
     // ============================================================================
-    // NEW METHODS FOR CHAT MEDIA (Image & Video)
+    // METHODS FOR CHAT MEDIA (Image & Video)
     // ============================================================================
 
     /// Upload image for chat messages
     pub async fn upload_image(&self, file_data: Vec<u8>, file_name: &str) -> Result<String> {
-        self.upload_to_cloudinary(file_data, file_name, "image")
+        self.upload_to_cloudinary(file_data, file_name, "image", &self.upload_preset)
             .await
     }
 
     /// Upload video for chat messages
     pub async fn upload_video(&self, file_data: Vec<u8>, file_name: &str) -> Result<String> {
-        self.upload_to_cloudinary(file_data, file_name, "video")
+        self.upload_to_cloudinary(file_data, file_name, "video", &self.video_upload_preset)
             .await
     }
 
@@ -63,11 +70,13 @@ impl CloudinaryService {
         file_data: Vec<u8>,
         file_name: &str,
         resource_type: &str,
+        upload_preset: &str,
     ) -> Result<String> {
         println!("📤 Uploading {} to Cloudinary...", resource_type);
         println!("   File name: {}", file_name);
         println!("   File size: {} bytes", file_data.len());
         println!("   Resource type: {}", resource_type);
+        println!("   Upload preset: {}", upload_preset);
 
         let upload_url = format!(
             "https://api.cloudinary.com/v1_1/{}/{}/upload",
@@ -75,7 +84,7 @@ impl CloudinaryService {
         );
 
         let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(60)) // Longer timeout for videos
+            .timeout(std::time::Duration::from_secs(180)) // 3 minutes for videos
             .build()
             .map_err(|e| AppError::CloudinaryError(format!("Failed to create client: {}", e)))?;
 
@@ -85,7 +94,6 @@ impl CloudinaryService {
                 .map(|info| info.mime_type())
                 .unwrap_or("image/jpeg")
         } else {
-            // For videos, try to detect or default to mp4
             if file_name.ends_with(".mp4") {
                 "video/mp4"
             } else if file_name.ends_with(".mov") {
@@ -99,9 +107,9 @@ impl CloudinaryService {
 
         println!("   Detected MIME type: {}", mime_type);
 
-        // Build multipart form
+        // Build multipart form with the specific upload preset
         let form = multipart::Form::new()
-            .text("upload_preset", self.upload_preset.clone())
+            .text("upload_preset", upload_preset.to_string())
             .part(
                 "file",
                 multipart::Part::bytes(file_data)
