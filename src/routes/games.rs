@@ -70,6 +70,10 @@ pub fn routes() -> Router<AppState> {
         // ========== STATISTICS ENDPOINTS (using statistics_handler) ==========
         // Get all statistics for a match
         .route(
+            "/statistics",
+            post(statistics_handler::add_statistics_snapshot),
+        )
+        .route(
             "/:match_id/statistics",
             get(statistics_handler::get_match_statistics),
         )
