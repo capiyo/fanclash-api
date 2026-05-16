@@ -1,3 +1,4 @@
+use crate::models::notification::{FCMToken, Notification};
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
@@ -8,11 +9,10 @@ use bson::{doc, oid::ObjectId};
 use chrono::Utc;
 use futures::TryStreamExt;
 use mongodb::{Collection, Database};
-use crate::models::notification::{FCMToken, Notification};
 
 use crate::models::chat::{
-    ChatMessage, ChatMessageResponse, CreateChatMessage, UpdateChatMessage,
-    MarkAsSeenRequest, PaginationQuery, ApiResponse
+    ApiResponse, ChatMessage, ChatMessageResponse, CreateChatMessage, MarkAsSeenRequest,
+    PaginationQuery, UpdateChatMessage,
 };
 use crate::state::AppState;
 
@@ -71,7 +71,10 @@ pub async fn get_post_messages(
                     eprintln!("❌ Error fetching messages: {}", err);
                     (
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(ApiResponse::error(format!("Failed to fetch messages: {}", err))),
+                        Json(ApiResponse::error(format!(
+                            "Failed to fetch messages: {}",
+                            err
+                        ))),
                     )
                 }
             }
@@ -80,7 +83,10 @@ pub async fn get_post_messages(
             eprintln!("❌ Error counting messages: {}", err);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiResponse::error(format!("Failed to count messages: {}", err))),
+                Json(ApiResponse::error(format!(
+                    "Failed to count messages: {}",
+                    err
+                ))),
             )
         }
     }
@@ -95,7 +101,10 @@ pub async fn create_message(
 ) -> impl IntoResponse {
     println!("📝 Creating message for post: {}", post_id);
     println!("📨 Sender: {} ({})", payload.sender_name, payload.sender_id);
-    println!("📨 Receiver: {} ({})", payload.receiver_name, payload.receiver_id);
+    println!(
+        "📨 Receiver: {} ({})",
+        payload.receiver_name, payload.receiver_id
+    );
     println!("💬 Message: {}", payload.message);
 
     let collection = get_chat_collection(&state.db);
@@ -118,7 +127,10 @@ pub async fn create_message(
 
     match collection.insert_one(&chat_message).await {
         Ok(insert_result) => {
-            println!("✅ Message inserted with ID: {:?}", insert_result.inserted_id);
+            println!(
+                "✅ Message inserted with ID: {:?}",
+                insert_result.inserted_id
+            );
 
             if let Some(object_id) = insert_result.inserted_id.as_object_id() {
                 let filter = doc! { "_id": object_id };
@@ -139,8 +151,9 @@ pub async fn create_message(
                             println!("📱 Sending push notification to receiver: {}", receiver_id);
 
                             // Initialize FCM service
-                            if let Ok(fcm_service) = crate::services::fcm_service::init_fcm_service().await {
-
+                            if let Ok(fcm_service) =
+                                crate::services::fcm_service::init_fcm_service().await
+                            {
                                 // Get receiver's FCM tokens
                                 let tokens_collection: Collection<FCMToken> =
                                     state_clone.db.collection("fcm_tokens");
@@ -149,7 +162,10 @@ pub async fn create_message(
                                 match tokens_collection.count_documents(token_filter).await {
                                     Ok(token_count) => {
                                         if token_count > 0 {
-                                            println!("📱 Found {} tokens for receiver", token_count);
+                                            println!(
+                                                "📱 Found {} tokens for receiver",
+                                                token_count
+                                            );
 
                                             // Create message preview
                                             let message_preview = if message_text.len() > 50 {
@@ -159,23 +175,25 @@ pub async fn create_message(
                                             };
 
                                             // Send notification
-                                            let notification_result = fcm_service.send_to_user(
-                                                &state_clone,
-                                                &receiver_id,
-                                                &format!("💬 New message from {}", sender_name),
-                                                &message_preview,
-                                                serde_json::json!({
-                                                    "post_id": post_id_clone,
-                                                    "message_id": message_id,
-                                                    "sender_id": payload.sender_id,
-                                                    "sender_name": sender_name,
-                                                    "receiver_id": receiver_id,
-                                                    "message_preview": message_preview,
-                                                    "type": "chat_message",
-                                                    "timestamp": Utc::now().to_rfc3339(),
-                                                }),
-                                                "chat_message"
-                                            ).await;
+                                            let notification_result = fcm_service
+                                                .send_to_user(
+                                                    &state_clone,
+                                                    &receiver_id,
+                                                    &format!("💬 New message from {}", sender_name),
+                                                    &message_preview,
+                                                    serde_json::json!({
+                                                        "post_id": post_id_clone,
+                                                        "message_id": message_id,
+                                                        "sender_id": payload.sender_id,
+                                                        "sender_name": sender_name,
+                                                        "receiver_id": receiver_id,
+                                                        "message_preview": message_preview,
+                                                        "type": "chat_message",
+                                                        "timestamp": Utc::now().to_rfc3339(),
+                                                    }),
+                                                    "chat_message",
+                                                )
+                                                .await;
 
                                             match notification_result {
                                                 Ok(sent) => {
@@ -186,7 +204,10 @@ pub async fn create_message(
                                                     }
                                                 }
                                                 Err(e) => {
-                                                    eprintln!("❌ Error sending push notification: {}", e);
+                                                    eprintln!(
+                                                        "❌ Error sending push notification: {}",
+                                                        e
+                                                    );
                                                 }
                                             }
 
@@ -211,9 +232,14 @@ pub async fn create_message(
                                                 created_at: bson::DateTime::from_chrono(Utc::now()),
                                             };
 
-                                            let _ = notifications_collection.insert_one(notification).await;
+                                            let _ = notifications_collection
+                                                .insert_one(notification)
+                                                .await;
                                         } else {
-                                            println!("📱 No FCM tokens found for receiver: {}", receiver_id);
+                                            println!(
+                                                "📱 No FCM tokens found for receiver: {}",
+                                                receiver_id
+                                            );
                                         }
                                     }
                                     Err(e) => {
@@ -232,14 +258,19 @@ pub async fn create_message(
                         eprintln!("❌ Message was inserted but could not be retrieved");
                         (
                             StatusCode::INTERNAL_SERVER_ERROR,
-                            Json(ApiResponse::error("Message saved but could not be retrieved".to_string())),
+                            Json(ApiResponse::error(
+                                "Message saved but could not be retrieved".to_string(),
+                            )),
                         )
                     }
                     Err(err) => {
                         eprintln!("❌ Error retrieving saved message: {}", err);
                         (
                             StatusCode::INTERNAL_SERVER_ERROR,
-                            Json(ApiResponse::error(format!("Failed to retrieve saved message: {}", err))),
+                            Json(ApiResponse::error(format!(
+                                "Failed to retrieve saved message: {}",
+                                err
+                            ))),
                         )
                     }
                 }
@@ -255,7 +286,10 @@ pub async fn create_message(
             eprintln!("❌ Failed to insert message: {}", err);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiResponse::error(format!("Failed to create message: {}", err))),
+                Json(ApiResponse::error(format!(
+                    "Failed to create message: {}",
+                    err
+                ))),
             )
         }
     }
@@ -291,7 +325,10 @@ pub async fn get_message(
                     eprintln!("❌ Error fetching message: {}", err);
                     (
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(ApiResponse::error(format!("Failed to fetch message: {}", err))),
+                        Json(ApiResponse::error(format!(
+                            "Failed to fetch message: {}",
+                            err
+                        ))),
                     )
                 }
             }
@@ -344,7 +381,10 @@ pub async fn update_message(
                     eprintln!("❌ Error updating message: {}", err);
                     (
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(ApiResponse::error(format!("Failed to update message: {}", err))),
+                        Json(ApiResponse::error(format!(
+                            "Failed to update message: {}",
+                            err
+                        ))),
                     )
                 }
             }
@@ -377,7 +417,9 @@ pub async fn delete_message(
                     println!("✅ Message deleted successfully: {}", message_id);
                     (
                         StatusCode::OK,
-                        Json(ApiResponse::success("Message deleted successfully".to_string())),
+                        Json(ApiResponse::success(
+                            "Message deleted successfully".to_string(),
+                        )),
                     )
                 }
                 Ok(_) => {
@@ -391,7 +433,10 @@ pub async fn delete_message(
                     eprintln!("❌ Error deleting message: {}", err);
                     (
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(ApiResponse::error(format!("Failed to delete message: {}", err))),
+                        Json(ApiResponse::error(format!(
+                            "Failed to delete message: {}",
+                            err
+                        ))),
                     )
                 }
             }
@@ -429,7 +474,10 @@ pub async fn mark_messages_as_seen(
 
     match collection.update_many(filter, update).await {
         Ok(update_result) => {
-            println!("✅ Marked {} messages as seen", update_result.modified_count);
+            println!(
+                "✅ Marked {} messages as seen",
+                update_result.modified_count
+            );
 
             let response = serde_json::json!({
                 "marked_count": update_result.modified_count
@@ -441,7 +489,10 @@ pub async fn mark_messages_as_seen(
             eprintln!("❌ Error marking messages as seen: {}", err);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiResponse::error(format!("Failed to mark messages: {}", err))),
+                Json(ApiResponse::error(format!(
+                    "Failed to mark messages: {}",
+                    err
+                ))),
             )
         }
     }
@@ -470,16 +521,16 @@ pub async fn get_unread_count(
                 "unread_count": count
             });
 
-            (
-                StatusCode::OK,
-                Json(ApiResponse::success(response)),
-            )
+            (StatusCode::OK, Json(ApiResponse::success(response)))
         }
         Err(err) => {
             eprintln!("❌ Error counting unread messages: {}", err);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiResponse::error(format!("Failed to count unread messages: {}", err))),
+                Json(ApiResponse::error(format!(
+                    "Failed to count unread messages: {}",
+                    err
+                ))),
             )
         }
     }
@@ -539,7 +590,10 @@ pub async fn get_user_messages(
                     eprintln!("❌ Error fetching user messages: {}", err);
                     (
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(ApiResponse::error(format!("Failed to fetch user messages: {}", err))),
+                        Json(ApiResponse::error(format!(
+                            "Failed to fetch user messages: {}",
+                            err
+                        ))),
                     )
                 }
             }
@@ -548,7 +602,10 @@ pub async fn get_user_messages(
             eprintln!("❌ Error counting user messages: {}", err);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiResponse::error(format!("Failed to count user messages: {}", err))),
+                Json(ApiResponse::error(format!(
+                    "Failed to count user messages: {}",
+                    err
+                ))),
             )
         }
     }

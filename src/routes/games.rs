@@ -4,6 +4,7 @@ use axum::{
 };
 
 use crate::handlers::games;
+use crate::handlers::lineup_handler; // Add this import
 use crate::state::AppState;
 
 pub fn routes() -> Router<AppState> {
@@ -65,6 +66,17 @@ pub fn routes() -> Router<AppState> {
         )
         .route("/statistics", post(games::add_statistics_snapshot))
         .route("/statistics/bulk", post(games::bulk_update_statistics))
+        // ========== LINEUPS ENDPOINTS ==========
+        .route("/lineups", post(lineup_handler::receive_lineups_update))
+        .route("/:match_id/lineups", get(lineup_handler::get_lineups))
+        .route(
+            "/:match_id/lineups/simplified",
+            get(lineup_handler::get_simplified_lineups),
+        )
+        .route(
+            "/:match_id/lineups/available",
+            get(lineup_handler::check_lineups_available),
+        )
         // ========== LIVE UPDATE ENDPOINT (Called by Python Poller) ==========
         .route("/live-update", post(games::receive_live_update))
 }

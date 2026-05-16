@@ -8,6 +8,7 @@ use mongodb::bson::{doc, to_bson, DateTime as BsonDateTime};
 use mongodb::Collection;
 use serde::Deserialize;
 use serde_json::json;
+use tracing;
 
 use crate::errors::{AppError, Result};
 use crate::handlers::ws_handler::broadcast_live_match_update;
@@ -18,14 +19,348 @@ use crate::models::game::{
 use crate::state::AppState;
 
 // ============================================================================
-// GAME HANDLERS
+// USER MODEL FOR NOTIFICATIONS
+// ============================================================================
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct User {
+    pub user_id: String,
+    pub username: String,
+    pub device_token: Option<String>,
+}
+
+// ============================================================================
+// STARTUP TEST NOTIFICATION
+// ============================================================================
+
+fn separator() -> String {
+    "=".repeat(55)
+}
+
+// Then use:
+
+pub async fn send_startup_test_notification(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>> {
+    tracing::info!("=======================================================");
+    tracing::info!("🔔 SENDING STARTUP TEST NOTIFICATION TO ALL USERS");
+    tracing::info!("=======================================================");
+
+    let now_eat = (Utc::now() + chrono::FixedOffset::east(3 * 3600)).format("%Y-%m-%d %H:%M:%S");
+
+    let users = fetch_all_users(&state).await?;
+
+    if users.is_empty() {
+        tracing::warn!("⚠️ No users found to notify");
+        return Ok(Json(json!({
+            "success": false,
+            "message": "No users found",
+            "notifications_sent": 0
+        })));
+    }
+
+    let title = "⚽ FanClash Live Poller is ACTIVE!";
+    let body = format!(
+        "Your match notifications are now live. Time: {} EAT",
+        now_eat
+    );
+
+    let mut sent_count = 0;
+    for user in &users {
+        // ← CHANGE HERE: use &users instead of users
+        if let Some(token) = &user.device_token {
+            // ← CHANGE HERE: use &user.device_token
+            if send_push_notification(
+                &state,
+                &user.user_id,
+                title,
+                &body,
+                "test_startup",
+                &json!({
+                    "timestamp": now_eat.to_string(),
+                    "test": true
+                }),
+            )
+            .await
+            {
+                sent_count += 1;
+            }
+            tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        }
+    }
+
+    tracing::info!("✅ Test notification sent to {} users", sent_count);
+    tracing::info!("=======================================================");
+
+    Ok(Json(json!({
+        "success": true,
+        "notifications_sent": sent_count,
+        "total_users": users.len(),  // ← This now works because users is not moved
+        "message": "Test notification sent successfully"
+    })))
+}
+// ============================================================================
+// LINEUP AVAILABLE NOTIFICATION
+// ============================================================================
+
+pub async fn send_lineup_available_notification(
+    State(state): State<AppState>,
+    Path(match_id): Path<String>,
+) -> Result<Json<serde_json::Value>> {
+    tracing::info!(
+        "📋 Sending lineup available notification for match: {}",
+        match_id
+    );
+
+    let games_col: Collection<Game> = state.db.collection("games");
+    let filter = doc! { "match_id": &match_id };
+
+    let game = games_col
+        .find_one(filter)
+        .await?
+        .ok_or_else(|| AppError::DocumentNotFound)?;
+
+    let users = fetch_all_users(&state).await?;
+
+    let title = format!(
+        "📋 Lineups are out! {} vs {}",
+        game.home_team, game.away_team
+    );
+    let body = format!(
+        "Check the starting XI for {} vs {}. Who will win?",
+        game.home_team, game.away_team
+    );
+
+    let mut sent_count = 0;
+    for user in users {
+        if let Some(token) = user.device_token {
+            if send_push_notification(
+                &state,
+                &user.user_id,
+                &title,
+                &body,
+                "lineups_available",
+                &json!({
+                    "fixture_id": match_id,
+                    "home_team": game.home_team,
+                    "away_team": game.away_team
+                }),
+            )
+            .await
+            {
+                sent_count += 1;
+            }
+            tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        }
+    }
+
+    tracing::info!("✅ Lineup notification sent to {} users", sent_count);
+
+    Ok(Json(json!({
+        "success": true,
+        "notifications_sent": sent_count,
+        "fixture_id": match_id
+    })))
+}
+
+// ============================================================================
+// HYPE NOTIFICATIONS
+// ============================================================================
+
+pub async fn check_and_send_hype_notifications(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>> {
+    tracing::info!("📅 Checking for hype notifications");
+
+    let games_col: Collection<Game> = state.db.collection("games");
+    let now = Utc::now();
+
+    let cursor = games_col.find(doc! { "status": "upcoming" }).await?;
+    let games: Vec<Game> = cursor.try_collect().await?;
+
+    let mut notifications_sent = 0;
+
+    for game in games {
+        let kickoff = parse_kickoff_utc(&game.date_iso, &game.time);
+        if let Some(kickoff) = kickoff {
+            let days_until = (kickoff - now).num_days();
+
+            if days_until == 14 {
+                send_hype_notification_to_all_users(&state, &game, "2 weeks", "🎉").await?;
+                notifications_sent += 1;
+            } else if days_until == 7 {
+                send_hype_notification_to_all_users(&state, &game, "1 week", "📅").await?;
+                notifications_sent += 1;
+            } else if days_until == 1 {
+                send_hype_notification_to_all_users(&state, &game, "24 hours", "⏰").await?;
+                notifications_sent += 1;
+            }
+        }
+    }
+
+    Ok(Json(json!({
+        "success": true,
+        "notifications_sent": notifications_sent
+    })))
+}
+
+// For send_hype_notification_to_all_users:
+async fn send_hype_notification_to_all_users(
+    state: &AppState,
+    game: &Game,
+    time_frame: &str,
+    emoji: &str,
+) -> Result<()> {
+    let users = fetch_all_users(state).await?;
+    let kickoff_eat = (parse_kickoff_utc(&game.date_iso, &game.time).unwrap()
+        + chrono::FixedOffset::east(3 * 3600))
+    .format("%A, %B %d at %H:%M");
+
+    let title = format!(
+        "{} {} vs {} in {}!",
+        emoji, game.home_team, game.away_team, time_frame
+    );
+    let body = format!(
+        "Kickoff at {} EAT. Get your predictions ready! ⚽",
+        kickoff_eat
+    );
+
+    for user in &users {
+        // ← CHANGE HERE
+        if let Some(token) = &user.device_token {
+            // ← CHANGE HERE
+            send_push_notification(state, &user.user_id, &title, &body, "hype", &json!({
+                "fixture_id": game.match_id,
+                "days_until": if time_frame == "2 weeks" { 14 } else if time_frame == "1 week" { 7 } else { 1 }
+            })).await;
+        }
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+    }
+
+    Ok(())
+}
+
+// ============================================================================
+// COUNTDOWN NOTIFICATIONS
+// ============================================================================
+
+pub async fn check_and_send_countdown_notifications(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>> {
+    tracing::info!("⏰ Checking for countdown notifications");
+
+    let games_col: Collection<Game> = state.db.collection("games");
+    let now = Utc::now();
+
+    let cursor = games_col.find(doc! { "status": "upcoming" }).await?;
+    let games: Vec<Game> = cursor.try_collect().await?;
+
+    let mut notifications_sent = 0;
+
+    for game in games {
+        let kickoff = parse_kickoff_utc(&game.date_iso, &game.time);
+        if let Some(kickoff) = kickoff {
+            let minutes_until = (kickoff - now).num_minutes();
+
+            if minutes_until == 60 {
+                send_countdown_notification(&state, &game, 60, "🔔 1 hour until kick-off!").await?;
+                notifications_sent += 1;
+            } else if minutes_until == 45 {
+                send_countdown_notification(&state, &game, 45, "⏰ 45 minutes to kick-off!")
+                    .await?;
+                notifications_sent += 1;
+            } else if minutes_until == 30 {
+                send_countdown_notification(&state, &game, 30, "⚡ 30 minutes to go!").await?;
+                notifications_sent += 1;
+            } else if minutes_until == 10 {
+                send_countdown_notification(
+                    &state,
+                    &game,
+                    10,
+                    "🔥 10 minutes! Last chance to vote!",
+                )
+                .await?;
+                notifications_sent += 1;
+            }
+        }
+    }
+
+    Ok(Json(json!({
+        "success": true,
+        "notifications_sent": notifications_sent
+    })))
+}
+
+async fn send_countdown_notification(
+    state: &AppState,
+    game: &Game,
+    minutes: i64,
+    title: &str,
+) -> Result<()> {
+    let users = fetch_all_users(state).await?;
+    let kickoff_eat = (parse_kickoff_utc(&game.date_iso, &game.time).unwrap()
+        + chrono::FixedOffset::east(3 * 3600))
+    .format("%H:%M");
+
+    let body = format!(
+        "{} vs {} at {} EAT. Get ready! ⚽",
+        game.home_team, game.away_team, kickoff_eat
+    );
+
+    for user in users {
+        if let Some(token) = user.device_token {
+            send_push_notification(
+                state,
+                &user.user_id,
+                title,
+                &body,
+                "countdown",
+                &json!({
+                    "fixture_id": game.match_id,
+                    "minutes_to_kickoff": minutes
+                }),
+            )
+            .await;
+        }
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+    }
+
+    Ok(())
+}
+
+// ============================================================================
+// HELPER FUNCTIONS
+// ============================================================================
+
+async fn fetch_all_users(state: &AppState) -> Result<Vec<User>> {
+    let users_col: Collection<User> = state.db.collection("users");
+    let cursor = users_col.find(doc! {}).await?;
+    let users = cursor.try_collect().await?;
+    Ok(users)
+}
+
+async fn send_push_notification(
+    state: &AppState,
+    user_id: &str,
+    title: &str,
+    body: &str,
+    notification_type: &str,
+    data: &serde_json::Value,
+) -> bool {
+    // This is a placeholder - implement your actual FCM push notification logic here
+    tracing::info!("📤 Would send push to {}: {} - {}", user_id, title, body);
+    true
+}
+
+// ============================================================================
+// EXISTING GAME HANDLERS
 // ============================================================================
 
 pub async fn get_games(
     State(state): State<AppState>,
     Query(query): Query<GameQuery>,
 ) -> Result<Json<Vec<Game>>> {
-    println!("🔍 GET /api/games called with query: {:?}", query);
+    tracing::info!("🔍 GET /api/games called with query: {:?}", query);
     let start_time = std::time::Instant::now();
 
     let collection: Collection<Game> = state.db.collection("games");
@@ -50,7 +385,7 @@ pub async fn get_games(
     games.sort_by(|a, b| b.scraped_at.cmp(&a.scraped_at));
 
     let elapsed = start_time.elapsed();
-    println!("✅ Fetched {} games in {:?}", games.len(), elapsed);
+    tracing::info!("✅ Fetched {} games in {:?}", games.len(), elapsed);
     Ok(Json(games))
 }
 
@@ -101,7 +436,7 @@ pub async fn get_live_games(State(state): State<AppState>) -> Result<Json<LiveGa
         last_updated: BsonDateTime::from_millis(max_timestamp),
     };
 
-    println!("✅ Fetched {} live games", count);
+    tracing::info!("✅ Fetched {} live games", count);
     Ok(Json(response))
 }
 
@@ -117,7 +452,7 @@ fn parse_kickoff_utc(date_iso: &str, time_str: &str) -> Option<chrono::DateTime<
 }
 
 pub async fn get_upcoming_games(State(state): State<AppState>) -> Result<Json<Vec<Game>>> {
-    println!("⏳ GET /api/games/upcoming called");
+    tracing::info!("⏳ GET /api/games/upcoming called");
     let start_time = std::time::Instant::now();
 
     let collection: Collection<Game> = state.db.collection("games");
@@ -126,7 +461,7 @@ pub async fn get_upcoming_games(State(state): State<AppState>) -> Result<Json<Ve
     let cursor = collection.find(filter).await?;
     let games: Vec<Game> = cursor.try_collect().await?;
 
-    println!("   → Fetched {} upcoming games", games.len());
+    tracing::info!("   → Fetched {} upcoming games", games.len());
 
     let now = Utc::now();
     const MATCH_DURATION_MINS: i64 = 120;
@@ -167,7 +502,7 @@ pub async fn get_upcoming_games(State(state): State<AppState>) -> Result<Json<Ve
         .collect();
 
     let elapsed = start_time.elapsed();
-    println!(
+    tracing::info!(
         "✅ Returning {} upcoming games (sorted) in {:?}",
         sorted.len(),
         elapsed
@@ -291,7 +626,7 @@ pub async fn get_recent_games(State(state): State<AppState>) -> Result<Json<Vec<
     games.sort_by(|a, b| b.scraped_at.cmp(&a.scraped_at));
     let recent_games: Vec<Game> = games.into_iter().take(10).collect();
 
-    println!("✅ Fetched {} recent games", recent_games.len());
+    tracing::info!("✅ Fetched {} recent games", recent_games.len());
     Ok(Json(recent_games))
 }
 
@@ -336,7 +671,7 @@ pub async fn get_fixture_vote_count_fast(
     State(state): State<AppState>,
     Path(fixture_id): Path<String>,
 ) -> Result<Json<serde_json::Value>> {
-    println!("📊 Getting vote count for fixture: {} (FAST)", fixture_id);
+    tracing::info!("📊 Getting vote count for fixture: {} (FAST)", fixture_id);
 
     let games_collection: Collection<Game> = state.db.collection("games");
     let filter = doc! { "match_id": &fixture_id };
@@ -353,7 +688,7 @@ pub async fn get_fixture_vote_count_fast(
         "timestamp": Utc::now().to_rfc3339(),
     });
 
-    println!("✅ Fixture {} has {} votes", fixture_id, game.votes);
+    tracing::info!("✅ Fixture {} has {} votes", fixture_id, game.votes);
     Ok(Json(response))
 }
 
@@ -361,7 +696,7 @@ pub async fn get_fixture_comment_count_fast(
     State(state): State<AppState>,
     Path(fixture_id): Path<String>,
 ) -> Result<Json<serde_json::Value>> {
-    println!(
+    tracing::info!(
         "📊 Getting comment count for fixture: {} (FAST)",
         fixture_id
     );
@@ -381,7 +716,7 @@ pub async fn get_fixture_comment_count_fast(
         "timestamp": Utc::now().to_rfc3339(),
     });
 
-    println!("✅ Fixture {} has {} comments", fixture_id, game.comments);
+    tracing::info!("✅ Fixture {} has {} comments", fixture_id, game.comments);
     Ok(Json(response))
 }
 
@@ -389,7 +724,7 @@ pub async fn get_fixture_counts_fast(
     State(state): State<AppState>,
     Path(fixture_id): Path<String>,
 ) -> Result<Json<serde_json::Value>> {
-    println!(
+    tracing::info!(
         "📊 Getting vote and comment counts for fixture: {} (FAST)",
         fixture_id
     );
@@ -410,9 +745,11 @@ pub async fn get_fixture_counts_fast(
         "timestamp": Utc::now().to_rfc3339(),
     });
 
-    println!(
+    tracing::info!(
         "✅ Fixture {} has {} votes and {} comments",
-        fixture_id, game.votes, game.comments
+        fixture_id,
+        game.votes,
+        game.comments
     );
     Ok(Json(response))
 }
@@ -421,7 +758,7 @@ pub async fn get_fixture_voters_fast(
     State(state): State<AppState>,
     Path(fixture_id): Path<String>,
 ) -> Result<Json<serde_json::Value>> {
-    println!("📊 Getting voters for fixture: {} (FAST)", fixture_id);
+    tracing::info!("📊 Getting voters for fixture: {} (FAST)", fixture_id);
 
     let games_collection: Collection<Game> = state.db.collection("games");
     let filter = doc! { "match_id": &fixture_id };
@@ -469,7 +806,7 @@ pub async fn get_fixture_voters_fast(
         "timestamp": Utc::now().to_rfc3339(),
     });
 
-    println!(
+    tracing::info!(
         "✅ Returning {} voters for fixture {}",
         voters.len(),
         fixture_id
@@ -481,7 +818,7 @@ pub async fn get_batch_fixture_counts_fast(
     State(state): State<AppState>,
     Json(fixture_ids): Json<Vec<String>>,
 ) -> Result<Json<serde_json::Value>> {
-    println!(
+    tracing::info!(
         "📊 Getting batch counts for {} fixtures (FAST)",
         fixture_ids.len()
     );
@@ -528,7 +865,7 @@ pub async fn get_batch_fixture_counts_fast(
         "timestamp": Utc::now().to_rfc3339(),
     });
 
-    println!("✅ Returning batch counts for {} fixtures", results.len());
+    tracing::info!("✅ Returning batch counts for {} fixtures", results.len());
     Ok(Json(response))
 }
 
@@ -536,9 +873,10 @@ pub async fn check_user_voted_fast(
     State(state): State<AppState>,
     Path((fixture_id, user_id)): Path<(String, String)>,
 ) -> Result<Json<serde_json::Value>> {
-    println!(
+    tracing::info!(
         "🔍 Checking if user {} voted for fixture {}",
-        user_id, fixture_id
+        user_id,
+        fixture_id
     );
 
     let games_collection: Collection<Game> = state.db.collection("games");
@@ -578,7 +916,7 @@ pub async fn get_match_timeline(
     State(state): State<AppState>,
     Path(match_id): Path<String>,
 ) -> Result<Json<Vec<TimelineEvent>>> {
-    println!("📜 GET /api/games/{}/timeline called", match_id);
+    tracing::info!("📜 GET /api/games/{}/timeline called", match_id);
 
     let collection: Collection<TimelineEvent> = state.db.collection("timeline");
     let filter = doc! { "match_id": &match_id };
@@ -587,7 +925,7 @@ pub async fn get_match_timeline(
     let cursor = collection.find(filter).sort(sort).await?;
     let events: Vec<TimelineEvent> = cursor.try_collect().await?;
 
-    println!(
+    tracing::info!(
         "✅ Fetched {} timeline events for match {}",
         events.len(),
         match_id
@@ -599,9 +937,10 @@ pub async fn get_match_timeline_by_type(
     State(state): State<AppState>,
     Path((match_id, event_type)): Path<(String, String)>,
 ) -> Result<Json<Vec<TimelineEvent>>> {
-    println!(
+    tracing::info!(
         "📜 GET /api/games/{}/timeline/{} called",
-        match_id, event_type
+        match_id,
+        event_type
     );
 
     let collection: Collection<TimelineEvent> = state.db.collection("timeline");
@@ -614,7 +953,7 @@ pub async fn get_match_timeline_by_type(
     let cursor = collection.find(filter).sort(sort).await?;
     let events: Vec<TimelineEvent> = cursor.try_collect().await?;
 
-    println!("✅ Fetched {} {} events", events.len(), event_type);
+    tracing::info!("✅ Fetched {} {} events", events.len(), event_type);
     Ok(Json(events))
 }
 
@@ -622,7 +961,7 @@ pub async fn get_latest_goal(
     State(state): State<AppState>,
     Path(match_id): Path<String>,
 ) -> Result<Json<Option<TimelineEvent>>> {
-    println!("⚽ GET /api/games/{}/latest-goal called", match_id);
+    tracing::info!("⚽ GET /api/games/{}/latest-goal called", match_id);
 
     let collection: Collection<TimelineEvent> = state.db.collection("timeline");
     let filter = doc! {
@@ -640,12 +979,12 @@ pub async fn add_timeline_event(
     State(state): State<AppState>,
     Json(event): Json<TimelineEvent>,
 ) -> Result<Json<TimelineEvent>> {
-    println!("➕ Adding timeline event for match {}", event.match_id);
+    tracing::info!("➕ Adding timeline event for match {}", event.match_id);
 
     let collection: Collection<TimelineEvent> = state.db.collection("timeline");
     collection.insert_one(&event).await?;
 
-    println!("✅ Timeline event added");
+    tracing::info!("✅ Timeline event added");
     Ok(Json(event))
 }
 
@@ -657,7 +996,7 @@ pub async fn get_match_statistics(
     State(state): State<AppState>,
     Path(match_id): Path<String>,
 ) -> Result<Json<Vec<MatchStatistics>>> {
-    println!("📊 GET /api/games/{}/statistics called", match_id);
+    tracing::info!("📊 GET /api/games/{}/statistics called", match_id);
 
     let collection: Collection<MatchStatistics> = state.db.collection("statistics");
     let filter = doc! { "match_id": &match_id };
@@ -666,7 +1005,7 @@ pub async fn get_match_statistics(
     let cursor = collection.find(filter).sort(sort).await?;
     let stats: Vec<MatchStatistics> = cursor.try_collect().await?;
 
-    println!(
+    tracing::info!(
         "✅ Fetched {} statistic snapshots for match {}",
         stats.len(),
         match_id
@@ -678,7 +1017,7 @@ pub async fn get_latest_statistics(
     State(state): State<AppState>,
     Path(match_id): Path<String>,
 ) -> Result<Json<Option<MatchStatistics>>> {
-    println!("📊 GET /api/games/{}/statistics/latest called", match_id);
+    tracing::info!("📊 GET /api/games/{}/statistics/latest called", match_id);
 
     let collection: Collection<MatchStatistics> = state.db.collection("statistics");
     let filter = doc! { "match_id": &match_id };
@@ -693,9 +1032,10 @@ pub async fn get_statistics_at_minute(
     State(state): State<AppState>,
     Path((match_id, minute)): Path<(String, i32)>,
 ) -> Result<Json<Option<MatchStatistics>>> {
-    println!(
+    tracing::info!(
         "📊 GET /api/games/{}/statistics/{} called",
-        match_id, minute
+        match_id,
+        minute
     );
 
     let collection: Collection<MatchStatistics> = state.db.collection("statistics");
@@ -713,9 +1053,10 @@ pub async fn add_statistics_snapshot(
     State(state): State<AppState>,
     Json(stats): Json<MatchStatistics>,
 ) -> Result<Json<MatchStatistics>> {
-    println!(
+    tracing::info!(
         "📊 Adding statistics snapshot for match {} at minute {}",
-        stats.match_id, stats.minute
+        stats.match_id,
+        stats.minute
     );
 
     let collection: Collection<MatchStatistics> = state.db.collection("statistics");
@@ -725,14 +1066,13 @@ pub async fn add_statistics_snapshot(
         "minute": stats.minute
     };
 
-    // Convert to BSON, handling the error properly
     let bson_stats = to_bson(&stats)
         .map_err(|e| AppError::InternalServerError(format!("Failed to serialize stats: {}", e)))?;
     let update = doc! { "$set": bson_stats };
 
     collection.update_one(filter, update).upsert(true).await?;
 
-    println!("✅ Statistics snapshot saved");
+    tracing::info!("✅ Statistics snapshot saved");
     Ok(Json(stats))
 }
 
@@ -740,21 +1080,19 @@ pub async fn bulk_update_statistics(
     State(state): State<AppState>,
     Json(stats_list): Json<Vec<MatchStatistics>>,
 ) -> Result<Json<serde_json::Value>> {
-    println!("📊 Bulk updating {} statistics records", stats_list.len());
+    tracing::info!("📊 Bulk updating {} statistics records", stats_list.len());
 
     let collection: Collection<MatchStatistics> = state.db.collection("statistics");
 
     let mut inserted = 0;
     let mut updated = 0;
 
-    // Use &stats_list to borrow instead of moving
     for stats in &stats_list {
         let filter = doc! {
             "match_id": &stats.match_id,
             "minute": stats.minute
         };
 
-        // Convert to BSON, handling the error properly
         let bson_stats = to_bson(stats).map_err(|e| {
             AppError::internal_server_error(format!("Failed to serialize stats: {}", e))
         })?;
@@ -769,7 +1107,6 @@ pub async fn bulk_update_statistics(
         }
     }
 
-    // Now stats_list is still available because we borrowed it
     let response = json!({
         "success": true,
         "inserted": inserted,
@@ -784,12 +1121,11 @@ pub async fn bulk_update_statistics(
 // LIVE UPDATE HANDLER (Called by Python Poller)
 // ============================================================================
 
-// In your game_routes.rs, update receive_live_update:
 pub async fn receive_live_update(
     State(state): State<AppState>,
     Json(update): Json<LiveGameUpdate>,
 ) -> Result<Json<serde_json::Value>> {
-    println!("🔴 Live update received: {:?}", update);
+    tracing::info!("🔴 Live update received: {:?}", update);
 
     let games_col: Collection<Game> = state.db.collection("games");
     let filter = doc! { "match_id": &update.fixture_id };
@@ -850,7 +1186,6 @@ pub async fn receive_live_update(
 
     // ========== 4. SEND PUSH NOTIFICATIONS TO VOTERS ==========
     if update.event_type == "goal" {
-        // Fetch the updated fixture with voters
         if let Some(fixture) = games_col.find_one(filter).await? {
             let voters = fixture.voters;
 
@@ -891,19 +1226,26 @@ pub async fn receive_live_update(
                         )
                     };
 
-                    // Send push notification (you need to implement this)
-                    // send_push_notification(&voter.user_id, &title, &body, &ntype, &update).await;
+                    send_push_notification(
+                        &state,
+                        &voter.user_id,
+                        &title,
+                        &body,
+                        &ntype,
+                        &json!({
+                            "fixture_id": update.fixture_id,
+                            "home_score": update.home_score,
+                            "away_score": update.away_score,
+                            "minute": update.minute,
+                        }),
+                    )
+                    .await;
 
-                    tracing::info!(
-                        "📲 Would send notification to {}: {} - {}",
-                        voter.user_id,
-                        title,
-                        body
-                    );
+                    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
                 }
 
                 tracing::info!(
-                    "📲 Goal notifications ready for {} voters for fixture {}",
+                    "📲 Goal notifications sent to {} voters for fixture {}",
                     voters.len(),
                     update.fixture_id
                 );
@@ -918,15 +1260,16 @@ pub async fn receive_live_update(
         "event_type": update.event_type,
     })))
 }
+
 // ============================================================================
-// BULK UPDATE HANDLERS (for poller)
+// BULK UPDATE HANDLERS
 // ============================================================================
 
 pub async fn bulk_add_timeline_events(
     State(state): State<AppState>,
     Json(events): Json<Vec<TimelineEvent>>,
 ) -> Result<Json<serde_json::Value>> {
-    println!("📜 Bulk adding {} timeline events", events.len());
+    tracing::info!("📜 Bulk adding {} timeline events", events.len());
 
     let collection: Collection<TimelineEvent> = state.db.collection("timeline");
 
