@@ -16,18 +16,8 @@ use crate::models::game::{
     Game, GameQuery, GameStatusUpdate, LiveGameUpdate, LiveGamesResponse, MatchStatistics,
     StatisticsData, TimelineEvent, TimelineEventData, UpdateGameScore, Voter,
 };
+use crate::models::notification::FCMToken;
 use crate::state::AppState;
-
-// ============================================================================
-// USER MODEL FOR NOTIFICATIONS
-// ============================================================================
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct User {
-    pub user_id: String,
-    pub username: String,
-    pub device_token: Option<String>,
-}
 
 // ============================================================================
 // TEST NOTIFICATION REQUEST (called by poller)
@@ -53,7 +43,6 @@ pub async fn send_test_notification_from_poller(
     tracing::info!("  Type: {}, Message: {}", payload.r#type, payload.message);
     tracing::info!("=======================================================");
 
-    // Call the existing test notification function
     send_startup_test_notification(State(state)).await
 }
 
@@ -66,13 +55,15 @@ pub async fn send_startup_test_notification(
 
     let now_eat = (Utc::now() + chrono::FixedOffset::east(3 * 3600)).format("%Y-%m-%d %H:%M:%S");
 
-    let users = fetch_all_users(&state).await?;
+    let fcm_tokens_col: Collection<FCMToken> = state.db.collection("fcm_tokens");
+    let cursor = fcm_tokens_col.find(doc! {}).await?;
+    let tokens: Vec<FCMToken> = cursor.try_collect().await?;
 
-    if users.is_empty() {
-        tracing::warn!("⚠️ No users found to notify");
+    if tokens.is_empty() {
+        tracing::warn!("⚠️ No FCM tokens found to notify");
         return Ok(Json(json!({
             "success": false,
-            "message": "No users found",
+            "message": "No FCM tokens found",
             "notifications_sent": 0
         })));
     }
@@ -82,27 +73,43 @@ pub async fn send_startup_test_notification(
         "Your match notifications are now live. Time: {} EAT",
         now_eat
     );
+    let notification_type = "test_startup";
+
+    let fcm_service = state
+        .fcm_service
+        .as_ref()
+        .ok_or_else(|| AppError::InternalServerError("FCM service not initialized".to_string()))?;
 
     let mut sent_count = 0;
-    for user in &users {
-        if let Some(token) = &user.device_token {
-            if send_push_notification(
-                &state,
-                &user.user_id,
-                title,
-                &body,
-                "test_startup",
-                &json!({
+    for token in &tokens {
+        match fcm_service
+            .send_to_user(
+                &state,         // 1st: AppState
+                &token.user_id, // 2nd: user_id
+                title,          // 3rd: title
+                &body,          // 4th: body
+                json!({
                     "timestamp": now_eat.to_string(),
-                    "test": true
-                }),
+                    "test": true,
+                    "type": notification_type
+                }), // 5th: data
+                notification_type, // 6th: notification_type
             )
             .await
-            {
-                sent_count += 1;
+        {
+            Ok(success) => {
+                if success {
+                    sent_count += 1;
+                    tracing::info!("✅ Test notification sent to user: {}", token.user_id);
+                } else {
+                    tracing::warn!("⚠️ No tokens for user: {}", token.user_id);
+                }
             }
-            tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+            Err(e) => {
+                tracing::warn!("⚠️ Failed to send to user {}: {}", token.user_id, e);
+            }
         }
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
     }
 
     tracing::info!("✅ Test notification sent to {} users", sent_count);
@@ -111,7 +118,7 @@ pub async fn send_startup_test_notification(
     Ok(Json(json!({
         "success": true,
         "notifications_sent": sent_count,
-        "total_users": users.len(),
+        "total_tokens": tokens.len(),
         "message": "Test notification sent successfully"
     })))
 }
@@ -137,7 +144,17 @@ pub async fn send_lineup_available_notification(
         .await?
         .ok_or_else(|| AppError::DocumentNotFound)?;
 
-    let users = fetch_all_users(&state).await?;
+    let fcm_tokens_col: Collection<FCMToken> = state.db.collection("fcm_tokens");
+    let cursor = fcm_tokens_col.find(doc! {}).await?;
+    let tokens: Vec<FCMToken> = cursor.try_collect().await?;
+
+    if tokens.is_empty() {
+        return Ok(Json(json!({
+            "success": false,
+            "message": "No FCM tokens found",
+            "notifications_sent": 0
+        })));
+    }
 
     let title = format!(
         "📋 Lineups are out! {} vs {}",
@@ -147,31 +164,43 @@ pub async fn send_lineup_available_notification(
         "Check the starting XI for {} vs {}. Who will win?",
         game.home_team, game.away_team
     );
+    let notification_type = "lineups_available";
+
+    let fcm_service = state
+        .fcm_service
+        .as_ref()
+        .ok_or_else(|| AppError::InternalServerError("FCM service not initialized".to_string()))?;
 
     let mut sent_count = 0;
-    for user in &users {
-        if let Some(token) = &user.device_token {
-            if send_push_notification(
-                &state,
-                &user.user_id,
-                &title,
-                &body,
-                "lineups_available",
-                &json!({
+    for token in &tokens {
+        match fcm_service
+            .send_to_user(
+                &state,         // 1st: AppState
+                &token.user_id, // 2nd: user_id
+                &title,         // 3rd: title
+                &body,          // 4th: body
+                json!({
                     "fixture_id": match_id,
                     "home_team": game.home_team,
-                    "away_team": game.away_team
-                }),
+                    "away_team": game.away_team,
+                    "type": notification_type
+                }), // 5th: data
+                notification_type, // 6th: notification_type
             )
             .await
-            {
+        {
+            Ok(_) => {
                 sent_count += 1;
+                tracing::info!("✅ Lineup notification sent to user: {}", token.user_id);
             }
-            tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+            Err(e) => {
+                tracing::warn!("⚠️ Failed to send to user {}: {}", token.user_id, e);
+            }
         }
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
     }
 
-    tracing::info!("✅ Lineup notification sent to {} users", sent_count);
+    tracing::info!("✅ Lineup notification sent to {} devices", sent_count);
 
     Ok(Json(json!({
         "success": true,
@@ -195,6 +224,18 @@ pub async fn check_and_send_hype_notifications(
     let cursor = games_col.find(doc! { "status": "upcoming" }).await?;
     let games: Vec<Game> = cursor.try_collect().await?;
 
+    let fcm_tokens_col: Collection<FCMToken> = state.db.collection("fcm_tokens");
+    let all_tokens: Vec<FCMToken> = fcm_tokens_col.find(doc! {}).await?.try_collect().await?;
+
+    if all_tokens.is_empty() {
+        return Ok(Json(json!({ "success": true, "notifications_sent": 0 })));
+    }
+
+    let fcm_service = state
+        .fcm_service
+        .as_ref()
+        .ok_or_else(|| AppError::InternalServerError("FCM service not initialized".to_string()))?;
+
     let mut notifications_sent = 0;
 
     for game in games {
@@ -202,14 +243,58 @@ pub async fn check_and_send_hype_notifications(
         if let Some(kickoff) = kickoff {
             let days_until = (kickoff - now).num_days();
 
-            if days_until == 14 {
-                send_hype_notification_to_all_users(&state, &game, "2 weeks", "🎉").await?;
-                notifications_sent += 1;
+            let (title, body, days) = if days_until == 14 {
+                (
+                    format!("🎉 2 weeks until {} vs {}!", game.home_team, game.away_team),
+                    format!(
+                        "Kickoff at {}",
+                        (kickoff + chrono::FixedOffset::east(3 * 3600))
+                            .format("%A, %B %d at %H:%M")
+                    ),
+                    14,
+                )
             } else if days_until == 7 {
-                send_hype_notification_to_all_users(&state, &game, "1 week", "📅").await?;
-                notifications_sent += 1;
+                (
+                    format!("📅 1 week to go! {} vs {}", game.home_team, game.away_team),
+                    format!(
+                        "Kickoff at {}",
+                        (kickoff + chrono::FixedOffset::east(3 * 3600))
+                            .format("%A, %B %d at %H:%M")
+                    ),
+                    7,
+                )
             } else if days_until == 1 {
-                send_hype_notification_to_all_users(&state, &game, "24 hours", "⏰").await?;
+                (
+                    format!(
+                        "⏰ 24 hours until {} vs {}!",
+                        game.home_team, game.away_team
+                    ),
+                    format!(
+                        "Kickoff tomorrow at {}",
+                        (kickoff + chrono::FixedOffset::east(3 * 3600)).format("%H:%M")
+                    ),
+                    1,
+                )
+            } else {
+                continue;
+            };
+
+            for token in &all_tokens {
+                let _ = fcm_service
+                    .send_to_user(
+                        &state,
+                        &token.user_id,
+                        &title,
+                        &body,
+                        json!({
+                            "fixture_id": game.match_id,
+                            "days_until": days,
+                            "type": "hype"
+                        }),
+                        "hype",
+                    )
+                    .await;
+                tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
                 notifications_sent += 1;
             }
         }
@@ -219,39 +304,6 @@ pub async fn check_and_send_hype_notifications(
         "success": true,
         "notifications_sent": notifications_sent
     })))
-}
-
-async fn send_hype_notification_to_all_users(
-    state: &AppState,
-    game: &Game,
-    time_frame: &str,
-    emoji: &str,
-) -> Result<()> {
-    let users = fetch_all_users(state).await?;
-    let kickoff_eat = (parse_kickoff_utc(&game.date_iso, &game.time).unwrap()
-        + chrono::FixedOffset::east(3 * 3600))
-    .format("%A, %B %d at %H:%M");
-
-    let title = format!(
-        "{} {} vs {} in {}!",
-        emoji, game.home_team, game.away_team, time_frame
-    );
-    let body = format!(
-        "Kickoff at {} EAT. Get your predictions ready! ⚽",
-        kickoff_eat
-    );
-
-    for user in &users {
-        if let Some(token) = &user.device_token {
-            send_push_notification(state, &user.user_id, &title, &body, "hype", &json!({
-                "fixture_id": game.match_id,
-                "days_until": if time_frame == "2 weeks" { 14 } else if time_frame == "1 week" { 7 } else { 1 }
-            })).await;
-        }
-        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-    }
-
-    Ok(())
 }
 
 // ============================================================================
@@ -269,31 +321,70 @@ pub async fn check_and_send_countdown_notifications(
     let cursor = games_col.find(doc! { "status": "upcoming" }).await?;
     let games: Vec<Game> = cursor.try_collect().await?;
 
+    let fcm_tokens_col: Collection<FCMToken> = state.db.collection("fcm_tokens");
+    let all_tokens: Vec<FCMToken> = fcm_tokens_col.find(doc! {}).await?.try_collect().await?;
+
+    if all_tokens.is_empty() {
+        return Ok(Json(json!({ "success": true, "notifications_sent": 0 })));
+    }
+
+    let fcm_service = state
+        .fcm_service
+        .as_ref()
+        .ok_or_else(|| AppError::InternalServerError("FCM service not initialized".to_string()))?;
+
     let mut notifications_sent = 0;
 
     for game in games {
         let kickoff = parse_kickoff_utc(&game.date_iso, &game.time);
         if let Some(kickoff) = kickoff {
             let minutes_until = (kickoff - now).num_minutes();
+            let kickoff_eat = (kickoff + chrono::FixedOffset::east(3 * 3600)).format("%H:%M");
+            let name = format!("{} vs {}", game.home_team, game.away_team);
 
-            if minutes_until == 60 {
-                send_countdown_notification(&state, &game, 60, "🔔 1 hour until kick-off!").await?;
-                notifications_sent += 1;
-            } else if minutes_until == 45 {
-                send_countdown_notification(&state, &game, 45, "⏰ 45 minutes to kick-off!")
-                    .await?;
-                notifications_sent += 1;
-            } else if minutes_until == 30 {
-                send_countdown_notification(&state, &game, 30, "⚡ 30 minutes to go!").await?;
-                notifications_sent += 1;
-            } else if minutes_until == 10 {
-                send_countdown_notification(
-                    &state,
-                    &game,
-                    10,
-                    "🔥 10 minutes! Last chance to vote!",
+            let (title, body) = if minutes_until == 60 {
+                (
+                    "🔔 1 hour until kick-off!".to_string(),
+                    format!(
+                        "{} kicks off at {} EAT. Pick your side! ⚽",
+                        name, kickoff_eat
+                    ),
                 )
-                .await?;
+            } else if minutes_until == 45 {
+                (
+                    "⏰ 45 minutes to kick-off!".to_string(),
+                    format!("{} at {} EAT — get your votes in! 🎯", name, kickoff_eat),
+                )
+            } else if minutes_until == 30 {
+                (
+                    "⚡ 30 minutes to go!".to_string(),
+                    format!("{} — rivalries heating up. Who's winning this? 🔥", name),
+                )
+            } else if minutes_until == 10 {
+                (
+                    "🔥 10 minutes! Last chance to vote!".to_string(),
+                    format!("{} — locks soon. Don't miss out! ⏰", name),
+                )
+            } else {
+                continue;
+            };
+
+            for token in &all_tokens {
+                let _ = fcm_service
+                    .send_to_user(
+                        &state,
+                        &token.user_id,
+                        &title,
+                        &body,
+                        json!({
+                            "fixture_id": game.match_id,
+                            "minutes_to_kickoff": minutes_until,
+                            "type": "countdown"
+                        }),
+                        "countdown",
+                    )
+                    .await;
+                tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
                 notifications_sent += 1;
             }
         }
@@ -305,81 +396,84 @@ pub async fn check_and_send_countdown_notifications(
     })))
 }
 
-async fn send_countdown_notification(
+// ============================================================================
+// HELPER FUNCTIONS
+// ============================================================================
+
+async fn send_goal_notification_to_voter(
     state: &AppState,
-    game: &Game,
-    minutes: i64,
-    title: &str,
+    voter: &Voter,
+    fixture: &Game,
+    update: &LiveGameUpdate,
 ) -> Result<()> {
-    let users = fetch_all_users(state).await?;
-    let kickoff_eat = (parse_kickoff_utc(&game.date_iso, &game.time).unwrap()
-        + chrono::FixedOffset::east(3 * 3600))
-    .format("%H:%M");
+    let fcm_service = state
+        .fcm_service
+        .as_ref()
+        .ok_or_else(|| AppError::InternalServerError("FCM service not initialized".to_string()))?;
 
-    let body = format!(
-        "{} vs {} at {} EAT. Get ready! ⚽",
-        game.home_team, game.away_team, kickoff_eat
-    );
+    let home_team = &fixture.home_team;
+    let away_team = &fixture.away_team;
+    let scored_team = if update.scorer == Some("home_team".to_string()) {
+        home_team
+    } else {
+        away_team
+    };
+    let score_line = format!("{}-{}", update.home_score, update.away_score);
 
-    for user in &users {
-        if let Some(token) = &user.device_token {
-            send_push_notification(
-                state,
-                &user.user_id,
-                title,
-                &body,
-                "countdown",
-                &json!({
-                    "fixture_id": game.match_id,
-                    "minutes_to_kickoff": minutes
-                }),
-            )
-            .await;
-        }
-        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+    let (title, body, ntype) = if Some(&voter.selection) == update.scorer.as_ref() {
+        (
+            format!("⚽ GOAL! Your team scored!"),
+            format!("{} scores! {} ({})", scored_team, score_line, update.minute),
+            "goal_your_team".to_string(),
+        )
+    } else if voter.selection == "draw" {
+        (
+            format!("⚽ Goal! Draw under pressure"),
+            format!(
+                "{} scores → {} ({})",
+                scored_team, score_line, update.minute
+            ),
+            "goal_draw_pressure".to_string(),
+        )
+    } else {
+        (
+            format!("⚔️ RIVAL SCORED!"),
+            format!(
+                "Your rival's team ({}) scored! {} ({})",
+                scored_team, score_line, update.minute
+            ),
+            "goal_rival_team".to_string(),
+        )
+    };
+
+    let success = fcm_service
+        .send_to_user(
+            state,
+            &voter.user_id,
+            &title,
+            &body,
+            json!({
+                "fixture_id": fixture.match_id,
+                "home_score": update.home_score,
+                "away_score": update.away_score,
+                "minute": update.minute,
+                "type": ntype
+            }),
+            &ntype,
+        )
+        .await?;
+
+    if success {
+        tracing::info!("✅ Goal notification sent to user: {}", voter.user_id);
+    } else {
+        tracing::warn!("⚠️ No tokens for user: {}", voter.user_id);
     }
 
     Ok(())
 }
 
 // ============================================================================
-// HELPER FUNCTIONS
-// ============================================================================
-
-async fn fetch_all_users(state: &AppState) -> Result<Vec<User>> {
-    let users_col: Collection<User> = state.db.collection("users");
-    let cursor = users_col.find(doc! {}).await?;
-    let users = cursor.try_collect().await?;
-    Ok(users)
-}
-
-async fn send_push_notification(
-    state: &AppState,
-    user_id: &str,
-    title: &str,
-    body: &str,
-    notification_type: &str,
-    data: &serde_json::Value,
-) -> bool {
-    if let Some(fcm_service) = &state.fcm_service {
-        match fcm_service
-            .send_to_user(state, user_id, title, body, data.clone(), notification_type)
-            .await
-        {
-            Ok(success) => success,
-            Err(e) => {
-                tracing::error!("Failed to send push: {}", e);
-                false
-            }
-        }
-    } else {
-        tracing::warn!("FCM service not initialized");
-        false
-    }
-}
-
-// ============================================================================
-// EXISTING GAME HANDLERS
+// EXISTING GAME HANDLERS (get_games, get_game_by_id, etc.)
 // ============================================================================
 
 pub async fn get_games(
@@ -1211,71 +1305,22 @@ pub async fn receive_live_update(
     .await;
 
     // ========== 4. SEND PUSH NOTIFICATIONS TO VOTERS ==========
+    // ========== 4. SEND PUSH NOTIFICATIONS TO VOTERS ==========
     if update.event_type == "goal" {
-        if let Some(fixture) = games_col.find_one(filter).await? {
-            let voters = fixture.voters;
-
-            if !voters.is_empty() {
-                let home_team = fixture.home_team;
-                let away_team = fixture.away_team;
-                let scored_team = if update.scorer == Some("home_team".to_string()) {
-                    &home_team
-                } else {
-                    &away_team
-                };
-                let score_line = format!("{}-{}", update.home_score, update.away_score);
-
-                for voter in &voters {
-                    let (title, body, ntype) = if Some(&voter.selection) == update.scorer.as_ref() {
-                        (
-                            format!("⚽ GOAL! Your team scored!"),
-                            format!("{} scores! {} ({})", scored_team, score_line, update.minute),
-                            "goal_your_team".to_string(),
-                        )
-                    } else if voter.selection == "draw" {
-                        (
-                            format!("⚽ Goal! Draw under pressure"),
-                            format!(
-                                "{} scores → {} ({})",
-                                scored_team, score_line, update.minute
-                            ),
-                            "goal_draw_pressure".to_string(),
-                        )
-                    } else {
-                        (
-                            format!("⚔️ RIVAL SCORED!"),
-                            format!(
-                                "Your rival's team ({}) scored! {} ({})",
-                                scored_team, score_line, update.minute
-                            ),
-                            "goal_rival_team".to_string(),
-                        )
-                    };
-
-                    send_push_notification(
-                        &state,
-                        &voter.user_id,
-                        &title,
-                        &body,
-                        &ntype,
-                        &json!({
-                            "fixture_id": update.fixture_id,
-                            "home_score": update.home_score,
-                            "away_score": update.away_score,
-                            "minute": update.minute,
-                        }),
-                    )
-                    .await;
-
-                    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        if let Some(ref fixture) = games_col.find_one(filter).await? {
+            // ← Use ref
+            if !fixture.voters.is_empty() {
+                for voter in &fixture.voters {
+                    // ← Borrow voters
+                    let _ = send_goal_notification_to_voter(&state, voter, fixture, &update).await;
                 }
-
-                tracing::info!(
-                    "📲 Goal notifications sent to {} voters for fixture {}",
-                    voters.len(),
-                    update.fixture_id
-                );
             }
+
+            tracing::info!(
+                "📲 Goal notifications sent to {} voters for fixture {}",
+                fixture.voters.len(),
+                update.fixture_id
+            );
         }
     }
 
