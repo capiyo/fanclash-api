@@ -8,6 +8,7 @@ use mongodb::bson::{doc, to_bson, DateTime as BsonDateTime};
 use mongodb::Collection;
 use serde::Deserialize;
 use serde_json::json;
+use std::collections::HashMap;
 use tracing;
 
 use crate::errors::{AppError, Result};
@@ -30,11 +31,6 @@ pub struct TestNotificationRequest {
     pub timestamp: String,
 }
 
-// ============================================================================
-// STARTUP TEST NOTIFICATION
-// ============================================================================
-// Add this function after TestNotificationRequest and before send_startup_test_notification
-
 pub async fn send_test_notification_from_poller(
     State(state): State<AppState>,
     Json(payload): Json<TestNotificationRequest>,
@@ -44,9 +40,12 @@ pub async fn send_test_notification_from_poller(
     tracing::info!("  Type: {}, Message: {}", payload.r#type, payload.message);
     tracing::info!("=======================================================");
 
-    // Call your existing test notification function
     send_startup_test_notification(State(state)).await
 }
+
+// ============================================================================
+// STARTUP TEST NOTIFICATION (Non-blocking - sends ONE per user)
+// ============================================================================
 
 pub async fn send_startup_test_notification(
     State(state): State<AppState>,
@@ -55,7 +54,6 @@ pub async fn send_startup_test_notification(
     tracing::info!("🔔 Received test notification request - processing in background");
     tracing::info!("=======================================================");
 
-    // Convert to String explicitly
     let now_eat = (Utc::now() + chrono::FixedOffset::east(3 * 3600))
         .format("%Y-%m-%d %H:%M:%S")
         .to_string();
@@ -69,96 +67,75 @@ pub async fn send_startup_test_notification(
     );
     let notification_type = "test_startup";
 
-    tracing::info!("📝 Notification details:");
-    tracing::info!("   Title: {}", title);
-    tracing::info!("   Body: {}", body);
-    tracing::info!("   Type: {}", notification_type);
-
-    // Clone now_eat for the background task
-    let now_eat_clone = now_eat.clone(); // ← Add this
-
-    // Clone state for background task
+    let now_eat_clone = now_eat.clone();
     let state_clone = state.clone();
-    tracing::info!("🔄 State cloned for background task");
 
-    // Spawn background task to send notifications
     tokio::spawn(async move {
-        tracing::info!("📱 BACKGROUND TASK STARTED - Sending test notifications...");
-        let task_start = std::time::Instant::now();
+        tracing::info!("📱 BACKGROUND: Sending test notifications...");
 
-        // Step 1: Query FCM tokens
-        tracing::info!("🔍 Step 1: Querying fcm_tokens collection...");
         let fcm_tokens_col: Collection<FCMToken> = state_clone.db.collection("fcm_tokens");
-
         let cursor = match fcm_tokens_col.find(doc! {}).await {
-            Ok(c) => {
-                tracing::info!("✅ Successfully queried fcm_tokens collection");
-                c
-            }
+            Ok(c) => c,
             Err(e) => {
                 tracing::error!("❌ Failed to query tokens: {}", e);
                 return;
             }
         };
 
-        // Step 2: Collect tokens
-        tracing::info!("📊 Step 2: Collecting tokens...");
         let tokens = match cursor.try_collect::<Vec<FCMToken>>().await {
-            Ok(t) => {
-                tracing::info!("✅ Collected {} FCM tokens", t.len());
-                t
-            }
+            Ok(t) => t,
             Err(e) => {
                 tracing::error!("❌ Failed to collect tokens: {}", e);
                 return;
             }
         };
 
-        if tokens.is_empty() {
-            tracing::warn!("⚠️ No FCM tokens found to notify");
-            tracing::info!("💡 Tip: Users need to register their FCM token first via /api/notifications/register-token");
-            return;
+        // Group by user_id and keep ONLY the LATEST token per user
+        let mut latest_tokens: HashMap<String, FCMToken> = HashMap::new();
+
+        for token in tokens {
+            let entry = latest_tokens.entry(token.user_id.clone());
+            match entry {
+                std::collections::hash_map::Entry::Vacant(v) => {
+                    v.insert(token);
+                }
+                std::collections::hash_map::Entry::Occupied(mut o) => {
+                    if token.updated_at > o.get().updated_at {
+                        o.insert(token);
+                    }
+                }
+            }
         }
 
-        // Step 3: Get FCM service
-        tracing::info!("🔧 Step 3: Getting FCM service...");
+        tracing::info!(
+            "📊 Found {} unique users (latest token only)",
+            latest_tokens.len()
+        );
+
         let fcm_service = match state_clone.fcm_service.as_ref() {
-            Some(s) => {
-                tracing::info!("✅ FCM service is available");
-                s
-            }
+            Some(s) => s,
             None => {
                 tracing::error!("❌ FCM service not initialized");
                 return;
             }
         };
 
-        // Step 4: Send notifications
-        tracing::info!(
-            "📤 Step 4: Sending notifications to {} users...",
-            tokens.len()
-        );
         let mut sent_count = 0;
-        let mut failed_count = 0;
-        let mut no_token_count = 0;
-
-        for (index, token) in tokens.iter().enumerate() {
-            let user_start = std::time::Instant::now();
+        for (user_id, token) in latest_tokens {
             tracing::info!(
-                "   ┌─ User {}/{}: {}",
-                index + 1,
-                tokens.len(),
-                token.user_id
+                "📱 Sending to user: {} (token: {}...)",
+                user_id,
+                &token.fcm_token[0..10.min(token.fcm_token.len())]
             );
 
             match fcm_service
                 .send_to_user(
                     &state_clone,
-                    &token.user_id,
+                    &user_id,
                     title,
                     &body,
                     json!({
-                        "timestamp": now_eat_clone,  // ← Use cloned version
+                        "timestamp": now_eat_clone,
                         "test": true,
                         "type": notification_type
                     }),
@@ -169,47 +146,32 @@ pub async fn send_startup_test_notification(
                 Ok(success) => {
                     if success {
                         sent_count += 1;
-                        tracing::info!("   │  ✅ Sent successfully in {:?}", user_start.elapsed());
+                        tracing::info!("✅ Sent to user: {}", user_id);
                     } else {
-                        no_token_count += 1;
-                        tracing::warn!("   │  ⚠️ No valid FCM token for user: {}", token.user_id);
+                        tracing::warn!("⚠️ No valid token for user: {}", user_id);
                     }
                 }
                 Err(e) => {
-                    failed_count += 1;
-                    tracing::warn!("   │  ❌ Failed to send: {}", e);
+                    tracing::warn!("❌ Failed to send to user {}: {}", user_id, e);
                 }
             }
-            tracing::info!("   └─ Time: {:?}", user_start.elapsed());
         }
 
-        // Step 5: Summary
-        let total_time = task_start.elapsed();
-        tracing::info!("═══════════════════════════════════════════════════════════════");
-        tracing::info!("📊 BACKGROUND TASK COMPLETE");
-        tracing::info!("   ✅ Sent successfully: {}", sent_count);
-        tracing::info!("   ⚠️ No token found: {}", no_token_count);
-        tracing::info!("   ❌ Failed: {}", failed_count);
-        tracing::info!("   📊 Total users processed: {}", tokens.len());
-        tracing::info!("   ⏱️  Total time: {:?}", total_time);
-        tracing::info!("═══════════════════════════════════════════════════════════════");
+        tracing::info!(
+            "✅ BACKGROUND: Test notifications sent to {} users",
+            sent_count
+        );
     });
 
-    tracing::info!(
-        "✅ Request handler returning immediately (notifications sending in background)"
-    );
-    tracing::info!("=======================================================");
-
-    // Return immediately
     Ok(Json(json!({
         "success": true,
-        "message": "Test notification started in background",
-        "timestamp": now_eat,  // ← Use original here
-        "total_users_pending": "check logs for details"
+        "message": "Test notification started in background (1 per user)",
+        "timestamp": now_eat
     })))
 }
+
 // ============================================================================
-// LINEUP AVAILABLE NOTIFICATION
+// LINEUP AVAILABLE NOTIFICATION (Non-blocking)
 // ============================================================================
 
 pub async fn send_lineup_available_notification(
@@ -217,85 +179,99 @@ pub async fn send_lineup_available_notification(
     Path(match_id): Path<String>,
 ) -> Result<Json<serde_json::Value>> {
     tracing::info!(
-        "📋 Sending lineup available notification for match: {}",
+        "📋 Received lineup notification request for match: {}",
         match_id
     );
 
-    let games_col: Collection<Game> = state.db.collection("games");
-    let filter = doc! { "match_id": &match_id };
+    let match_id_clone = match_id.clone();
+    let state_clone = state.clone();
 
-    let game = games_col
-        .find_one(filter)
-        .await?
-        .ok_or_else(|| AppError::DocumentNotFound)?;
+    tokio::spawn(async move {
+        tracing::info!("📱 BACKGROUND: Sending lineup notifications...");
 
-    let fcm_tokens_col: Collection<FCMToken> = state.db.collection("fcm_tokens");
-    let cursor = fcm_tokens_col.find(doc! {}).await?;
-    let tokens: Vec<FCMToken> = cursor.try_collect().await?;
+        let games_col: Collection<Game> = state_clone.db.collection("games");
+        let filter = doc! { "match_id": &match_id_clone };
 
-    if tokens.is_empty() {
-        return Ok(Json(json!({
-            "success": false,
-            "message": "No FCM tokens found",
-            "notifications_sent": 0
-        })));
-    }
-
-    let title = format!(
-        "📋 Lineups are out! {} vs {}",
-        game.home_team, game.away_team
-    );
-    let body = format!(
-        "Check the starting XI for {} vs {}. Who will win?",
-        game.home_team, game.away_team
-    );
-    let notification_type = "lineups_available";
-
-    let fcm_service = state
-        .fcm_service
-        .as_ref()
-        .ok_or_else(|| AppError::InternalServerError("FCM service not initialized".to_string()))?;
-
-    let mut sent_count = 0;
-    for token in &tokens {
-        match fcm_service
-            .send_to_user(
-                &state,         // 1st: AppState
-                &token.user_id, // 2nd: user_id
-                &title,         // 3rd: title
-                &body,          // 4th: body
-                json!({
-                    "fixture_id": match_id,
-                    "home_team": game.home_team,
-                    "away_team": game.away_team,
-                    "type": notification_type
-                }), // 5th: data
-                notification_type, // 6th: notification_type
-            )
-            .await
-        {
-            Ok(_) => {
-                sent_count += 1;
-                tracing::info!("✅ Lineup notification sent to user: {}", token.user_id);
+        let game = match games_col.find_one(filter).await {
+            Ok(Some(g)) => g,
+            Ok(None) => {
+                tracing::warn!("⚠️ Game not found: {}", match_id_clone);
+                return;
             }
             Err(e) => {
-                tracing::warn!("⚠️ Failed to send to user {}: {}", token.user_id, e);
+                tracing::error!("❌ Failed to fetch game: {}", e);
+                return;
             }
-        }
-        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-    }
+        };
 
-    tracing::info!("✅ Lineup notification sent to {} devices", sent_count);
+        let fcm_tokens_col: Collection<FCMToken> = state_clone.db.collection("fcm_tokens");
+        let cursor = match fcm_tokens_col.find(doc! {}).await {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::error!("❌ Failed to query tokens: {}", e);
+                return;
+            }
+        };
+
+        let tokens = match cursor.try_collect::<Vec<FCMToken>>().await {
+            Ok(t) => t,
+            Err(e) => {
+                tracing::error!("❌ Failed to collect tokens: {}", e);
+                return;
+            }
+        };
+
+        // Get unique users (send ONE per user)
+        let unique_users: std::collections::HashSet<String> =
+            tokens.iter().map(|t| t.user_id.clone()).collect();
+
+        let title = format!(
+            "📋 Lineups are out! {} vs {}",
+            game.home_team, game.away_team
+        );
+        let body = format!(
+            "Check the starting XI for {} vs {}. Who will win?",
+            game.home_team, game.away_team
+        );
+        let notification_type = "lineups_available";
+
+        let fcm_service = match state_clone.fcm_service.as_ref() {
+            Some(s) => s,
+            None => {
+                tracing::error!("❌ FCM service not initialized");
+                return;
+            }
+        };
+
+        for user_id in unique_users {
+            let _ = fcm_service
+                .send_to_user(
+                    &state_clone,
+                    &user_id,
+                    &title,
+                    &body,
+                    json!({
+                        "fixture_id": match_id_clone,
+                        "home_team": game.home_team,
+                        "away_team": game.away_team,
+                        "type": notification_type
+                    }),
+                    notification_type,
+                )
+                .await;
+        }
+        tracing::info!("✅ BACKGROUND: Lineup notifications complete");
+    });
 
     Ok(Json(json!({
         "success": true,
-        "notifications_sent": sent_count,
+        "message": "Lineup notification started in background",
         "fixture_id": match_id
     })))
 }
 
 // ============================================================================
-// HYPE NOTIFICATIONS
+// HYPE NOTIFICATIONS (Non-blocking)
 // ============================================================================
 
 pub async fn check_and_send_hype_notifications(
@@ -303,96 +279,127 @@ pub async fn check_and_send_hype_notifications(
 ) -> Result<Json<serde_json::Value>> {
     tracing::info!("📅 Checking for hype notifications");
 
-    let games_col: Collection<Game> = state.db.collection("games");
-    let now = Utc::now();
+    let state_clone = state.clone();
 
-    let cursor = games_col.find(doc! { "status": "upcoming" }).await?;
-    let games: Vec<Game> = cursor.try_collect().await?;
+    tokio::spawn(async move {
+        tracing::info!("📱 BACKGROUND: Checking hype notifications...");
 
-    let fcm_tokens_col: Collection<FCMToken> = state.db.collection("fcm_tokens");
-    let all_tokens: Vec<FCMToken> = fcm_tokens_col.find(doc! {}).await?.try_collect().await?;
+        let games_col: Collection<Game> = state_clone.db.collection("games");
+        let now = Utc::now();
 
-    if all_tokens.is_empty() {
-        return Ok(Json(json!({ "success": true, "notifications_sent": 0 })));
-    }
+        let cursor = match games_col.find(doc! { "status": "upcoming" }).await {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::error!("❌ Failed to query games: {}", e);
+                return;
+            }
+        };
 
-    let fcm_service = state
-        .fcm_service
-        .as_ref()
-        .ok_or_else(|| AppError::InternalServerError("FCM service not initialized".to_string()))?;
+        let games: Vec<Game> = match cursor.try_collect().await {
+            Ok(g) => g,
+            Err(e) => {
+                tracing::error!("❌ Failed to collect games: {}", e);
+                return;
+            }
+        };
 
-    let mut notifications_sent = 0;
+        let fcm_tokens_col: Collection<FCMToken> = state_clone.db.collection("fcm_tokens");
+        let cursor = match fcm_tokens_col.find(doc! {}).await {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::error!("❌ Failed to query tokens: {}", e);
+                return;
+            }
+        };
 
-    for game in games {
-        let kickoff = parse_kickoff_utc(&game.date_iso, &game.time);
-        if let Some(kickoff) = kickoff {
-            let days_until = (kickoff - now).num_days();
+        let tokens = match cursor.try_collect::<Vec<FCMToken>>().await {
+            Ok(t) => t,
+            Err(e) => {
+                tracing::error!("❌ Failed to collect tokens: {}", e);
+                return;
+            }
+        };
 
-            let (title, body, days) = if days_until == 14 {
-                (
-                    format!("🎉 2 weeks until {} vs {}!", game.home_team, game.away_team),
-                    format!(
-                        "Kickoff at {}",
-                        (kickoff + chrono::FixedOffset::east(3 * 3600))
-                            .format("%A, %B %d at %H:%M")
-                    ),
-                    14,
-                )
-            } else if days_until == 7 {
-                (
-                    format!("📅 1 week to go! {} vs {}", game.home_team, game.away_team),
-                    format!(
-                        "Kickoff at {}",
-                        (kickoff + chrono::FixedOffset::east(3 * 3600))
-                            .format("%A, %B %d at %H:%M")
-                    ),
-                    7,
-                )
-            } else if days_until == 1 {
-                (
-                    format!(
-                        "⏰ 24 hours until {} vs {}!",
-                        game.home_team, game.away_team
-                    ),
-                    format!(
-                        "Kickoff tomorrow at {}",
-                        (kickoff + chrono::FixedOffset::east(3 * 3600)).format("%H:%M")
-                    ),
-                    1,
-                )
-            } else {
-                continue;
-            };
+        let unique_users: std::collections::HashSet<String> =
+            tokens.iter().map(|t| t.user_id.clone()).collect();
+        let fcm_service = match state_clone.fcm_service.as_ref() {
+            Some(s) => s,
+            None => {
+                tracing::error!("❌ FCM service not initialized");
+                return;
+            }
+        };
 
-            for token in &all_tokens {
-                let _ = fcm_service
-                    .send_to_user(
-                        &state,
-                        &token.user_id,
-                        &title,
-                        &body,
-                        json!({
-                            "fixture_id": game.match_id,
-                            "days_until": days,
-                            "type": "hype"
-                        }),
-                        "hype",
+        for game in games {
+            let kickoff = parse_kickoff_utc(&game.date_iso, &game.time);
+            if let Some(kickoff) = kickoff {
+                let days_until = (kickoff - now).num_days();
+
+                let (title, body, days) = if days_until == 14 {
+                    (
+                        format!("🎉 2 weeks until {} vs {}!", game.home_team, game.away_team),
+                        format!(
+                            "Kickoff at {}",
+                            (kickoff + chrono::FixedOffset::east(3 * 3600))
+                                .format("%A, %B %d at %H:%M")
+                        ),
+                        14,
                     )
-                    .await;
-                tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-                notifications_sent += 1;
+                } else if days_until == 7 {
+                    (
+                        format!("📅 1 week to go! {} vs {}", game.home_team, game.away_team),
+                        format!(
+                            "Kickoff at {}",
+                            (kickoff + chrono::FixedOffset::east(3 * 3600))
+                                .format("%A, %B %d at %H:%M")
+                        ),
+                        7,
+                    )
+                } else if days_until == 1 {
+                    (
+                        format!(
+                            "⏰ 24 hours until {} vs {}!",
+                            game.home_team, game.away_team
+                        ),
+                        format!(
+                            "Kickoff tomorrow at {}",
+                            (kickoff + chrono::FixedOffset::east(3 * 3600)).format("%H:%M")
+                        ),
+                        1,
+                    )
+                } else {
+                    continue;
+                };
+
+                for user_id in &unique_users {
+                    let _ = fcm_service
+                        .send_to_user(
+                            &state_clone,
+                            user_id,
+                            &title,
+                            &body,
+                            json!({
+                                "fixture_id": game.match_id,
+                                "days_until": days,
+                                "type": "hype"
+                            }),
+                            "hype",
+                        )
+                        .await;
+                }
             }
         }
-    }
+        tracing::info!("✅ BACKGROUND: Hype notifications complete");
+    });
 
     Ok(Json(json!({
         "success": true,
-        "notifications_sent": notifications_sent
+        "message": "Hype notifications check started in background"
     })))
 }
 
 // ============================================================================
-// COUNTDOWN NOTIFICATIONS
+// COUNTDOWN NOTIFICATIONS (Non-blocking)
 // ============================================================================
 
 pub async fn check_and_send_countdown_notifications(
@@ -400,84 +407,115 @@ pub async fn check_and_send_countdown_notifications(
 ) -> Result<Json<serde_json::Value>> {
     tracing::info!("⏰ Checking for countdown notifications");
 
-    let games_col: Collection<Game> = state.db.collection("games");
-    let now = Utc::now();
+    let state_clone = state.clone();
 
-    let cursor = games_col.find(doc! { "status": "upcoming" }).await?;
-    let games: Vec<Game> = cursor.try_collect().await?;
+    tokio::spawn(async move {
+        tracing::info!("📱 BACKGROUND: Checking countdown notifications...");
 
-    let fcm_tokens_col: Collection<FCMToken> = state.db.collection("fcm_tokens");
-    let all_tokens: Vec<FCMToken> = fcm_tokens_col.find(doc! {}).await?.try_collect().await?;
+        let games_col: Collection<Game> = state_clone.db.collection("games");
+        let now = Utc::now();
 
-    if all_tokens.is_empty() {
-        return Ok(Json(json!({ "success": true, "notifications_sent": 0 })));
-    }
+        let cursor = match games_col.find(doc! { "status": "upcoming" }).await {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::error!("❌ Failed to query games: {}", e);
+                return;
+            }
+        };
 
-    let fcm_service = state
-        .fcm_service
-        .as_ref()
-        .ok_or_else(|| AppError::InternalServerError("FCM service not initialized".to_string()))?;
+        let games: Vec<Game> = match cursor.try_collect().await {
+            Ok(g) => g,
+            Err(e) => {
+                tracing::error!("❌ Failed to collect games: {}", e);
+                return;
+            }
+        };
 
-    let mut notifications_sent = 0;
+        let fcm_tokens_col: Collection<FCMToken> = state_clone.db.collection("fcm_tokens");
+        let cursor = match fcm_tokens_col.find(doc! {}).await {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::error!("❌ Failed to query tokens: {}", e);
+                return;
+            }
+        };
 
-    for game in games {
-        let kickoff = parse_kickoff_utc(&game.date_iso, &game.time);
-        if let Some(kickoff) = kickoff {
-            let minutes_until = (kickoff - now).num_minutes();
-            let kickoff_eat = (kickoff + chrono::FixedOffset::east(3 * 3600)).format("%H:%M");
-            let name = format!("{} vs {}", game.home_team, game.away_team);
+        let tokens = match cursor.try_collect::<Vec<FCMToken>>().await {
+            Ok(t) => t,
+            Err(e) => {
+                tracing::error!("❌ Failed to collect tokens: {}", e);
+                return;
+            }
+        };
 
-            let (title, body) = if minutes_until == 60 {
-                (
-                    "🔔 1 hour until kick-off!".to_string(),
-                    format!(
-                        "{} kicks off at {} EAT. Pick your side! ⚽",
-                        name, kickoff_eat
-                    ),
-                )
-            } else if minutes_until == 45 {
-                (
-                    "⏰ 45 minutes to kick-off!".to_string(),
-                    format!("{} at {} EAT — get your votes in! 🎯", name, kickoff_eat),
-                )
-            } else if minutes_until == 30 {
-                (
-                    "⚡ 30 minutes to go!".to_string(),
-                    format!("{} — rivalries heating up. Who's winning this? 🔥", name),
-                )
-            } else if minutes_until == 10 {
-                (
-                    "🔥 10 minutes! Last chance to vote!".to_string(),
-                    format!("{} — locks soon. Don't miss out! ⏰", name),
-                )
-            } else {
-                continue;
-            };
+        let unique_users: std::collections::HashSet<String> =
+            tokens.iter().map(|t| t.user_id.clone()).collect();
+        let fcm_service = match state_clone.fcm_service.as_ref() {
+            Some(s) => s,
+            None => {
+                tracing::error!("❌ FCM service not initialized");
+                return;
+            }
+        };
 
-            for token in &all_tokens {
-                let _ = fcm_service
-                    .send_to_user(
-                        &state,
-                        &token.user_id,
-                        &title,
-                        &body,
-                        json!({
-                            "fixture_id": game.match_id,
-                            "minutes_to_kickoff": minutes_until,
-                            "type": "countdown"
-                        }),
-                        "countdown",
+        for game in games {
+            let kickoff = parse_kickoff_utc(&game.date_iso, &game.time);
+            if let Some(kickoff) = kickoff {
+                let minutes_until = (kickoff - now).num_minutes();
+                let kickoff_eat = (kickoff + chrono::FixedOffset::east(3 * 3600)).format("%H:%M");
+                let name = format!("{} vs {}", game.home_team, game.away_team);
+
+                let (title, body) = if minutes_until == 60 {
+                    (
+                        "🔔 1 hour until kick-off!".to_string(),
+                        format!(
+                            "{} kicks off at {} EAT. Pick your side! ⚽",
+                            name, kickoff_eat
+                        ),
                     )
-                    .await;
-                tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-                notifications_sent += 1;
+                } else if minutes_until == 45 {
+                    (
+                        "⏰ 45 minutes to kick-off!".to_string(),
+                        format!("{} at {} EAT — get your votes in! 🎯", name, kickoff_eat),
+                    )
+                } else if minutes_until == 30 {
+                    (
+                        "⚡ 30 minutes to go!".to_string(),
+                        format!("{} — rivalries heating up. Who's winning this? 🔥", name),
+                    )
+                } else if minutes_until == 10 {
+                    (
+                        "🔥 10 minutes! Last chance to vote!".to_string(),
+                        format!("{} — locks soon. Don't miss out! ⏰", name),
+                    )
+                } else {
+                    continue;
+                };
+
+                for user_id in &unique_users {
+                    let _ = fcm_service
+                        .send_to_user(
+                            &state_clone,
+                            user_id,
+                            &title,
+                            &body,
+                            json!({
+                                "fixture_id": game.match_id,
+                                "minutes_to_kickoff": minutes_until,
+                                "type": "countdown"
+                            }),
+                            "countdown",
+                        )
+                        .await;
+                }
             }
         }
-    }
+        tracing::info!("✅ BACKGROUND: Countdown notifications complete");
+    });
 
     Ok(Json(json!({
         "success": true,
-        "notifications_sent": notifications_sent
+        "message": "Countdown notifications check started in background"
     })))
 }
 
@@ -555,6 +593,17 @@ async fn send_goal_notification_to_voter(
     }
 
     Ok(())
+}
+
+fn parse_kickoff_utc(date_iso: &str, time_str: &str) -> Option<chrono::DateTime<Utc>> {
+    let date = NaiveDate::parse_from_str(date_iso, "%Y-%m-%d").ok()?;
+    let time = NaiveTime::parse_from_str(time_str, "%H:%M").ok()?;
+    let naive = NaiveDateTime::new(date, time);
+    let utc = chrono::FixedOffset::east_opt(3 * 3600)?
+        .from_local_datetime(&naive)
+        .single()?
+        .with_timezone(&Utc);
+    Some(utc)
 }
 
 // ============================================================================
@@ -643,17 +692,6 @@ pub async fn get_live_games(State(state): State<AppState>) -> Result<Json<LiveGa
 
     tracing::info!("✅ Fetched {} live games", count);
     Ok(Json(response))
-}
-
-fn parse_kickoff_utc(date_iso: &str, time_str: &str) -> Option<chrono::DateTime<Utc>> {
-    let date = NaiveDate::parse_from_str(date_iso, "%Y-%m-%d").ok()?;
-    let time = NaiveTime::parse_from_str(time_str, "%H:%M").ok()?;
-    let naive = NaiveDateTime::new(date, time);
-    let utc = chrono::FixedOffset::east_opt(3 * 3600)?
-        .from_local_datetime(&naive)
-        .single()?
-        .with_timezone(&Utc);
-    Some(utc)
 }
 
 pub async fn get_upcoming_games(State(state): State<AppState>) -> Result<Json<Vec<Game>>> {
@@ -1390,13 +1428,10 @@ pub async fn receive_live_update(
     .await;
 
     // ========== 4. SEND PUSH NOTIFICATIONS TO VOTERS ==========
-    // ========== 4. SEND PUSH NOTIFICATIONS TO VOTERS ==========
     if update.event_type == "goal" {
         if let Some(ref fixture) = games_col.find_one(filter).await? {
-            // ← Use ref
             if !fixture.voters.is_empty() {
                 for voter in &fixture.voters {
-                    // ← Borrow voters
                     let _ = send_goal_notification_to_voter(&state, voter, fixture, &update).await;
                 }
             }
