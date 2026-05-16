@@ -4,23 +4,22 @@ use axum::{
 };
 use chrono::{NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Utc};
 use futures_util::TryStreamExt;
-use mongodb::bson::{doc, DateTime as BsonDateTime};
+use mongodb::bson::{doc, to_bson, DateTime as BsonDateTime};
 use mongodb::Collection;
 use serde::Deserialize;
 use serde_json::json;
 
 use crate::errors::{AppError, Result};
-use crate::models::game::{Game, GameQuery as ModelGameQuery, LiveGamesResponse, LiveUpdate};
+use crate::handlers::ws_handler::broadcast_live_match_update;
+use crate::models::game::{
+    Game, GameQuery, GameStatusUpdate, LiveGameUpdate, LiveGamesResponse, MatchStatistics,
+    StatisticsData, TimelineEvent, TimelineEventData, UpdateGameScore, Voter,
+};
 use crate::state::AppState;
 
-#[derive(Debug, Deserialize)]
-pub struct GameQuery {
-    pub status: Option<String>,
-    pub league: Option<String>,
-    pub home_team: Option<String>,
-    pub away_team: Option<String>,
-    pub is_live: Option<bool>,
-}
+// ============================================================================
+// GAME HANDLERS
+// ============================================================================
 
 pub async fn get_games(
     State(state): State<AppState>,
@@ -38,14 +37,11 @@ pub async fn get_games(
     if let Some(league) = &query.league {
         filter.insert("league", league);
     }
-    if let Some(home_team) = &query.home_team {
-        filter.insert("home_team", home_team);
-    }
-    if let Some(away_team) = &query.away_team {
-        filter.insert("away_team", away_team);
-    }
     if let Some(is_live) = query.is_live {
         filter.insert("is_live", is_live);
+    }
+    if let Some(tournament) = &query.tournament {
+        filter.insert("tournament", tournament);
     }
 
     let cursor = collection.find(filter).await?;
@@ -109,13 +105,10 @@ pub async fn get_live_games(State(state): State<AppState>) -> Result<Json<LiveGa
     Ok(Json(response))
 }
 
-/// Parse a game's kickoff time from its date_iso ("2026-04-08") and time ("22:00")
-/// into a UTC chrono timestamp. Times in the DB are stored as EAT (UTC+3).
 fn parse_kickoff_utc(date_iso: &str, time_str: &str) -> Option<chrono::DateTime<Utc>> {
     let date = NaiveDate::parse_from_str(date_iso, "%Y-%m-%d").ok()?;
     let time = NaiveTime::parse_from_str(time_str, "%H:%M").ok()?;
     let naive = NaiveDateTime::new(date, time);
-    // Times stored as EAT (UTC+3) — subtract 3 hours to get UTC
     let utc = chrono::FixedOffset::east_opt(3 * 3600)?
         .from_local_datetime(&naive)
         .single()?
@@ -136,11 +129,8 @@ pub async fn get_upcoming_games(State(state): State<AppState>) -> Result<Json<Ve
     println!("   → Fetched {} upcoming games", games.len());
 
     let now = Utc::now();
-    const MATCH_DURATION_MINS: i64 = 120; // 90 min + extra time buffer
+    const MATCH_DURATION_MINS: i64 = 120;
 
-    // Split into two buckets:
-    //   - not_started: kickoff hasn't passed 120 min window yet → sort soonest first
-    //   - likely_over:  kickoff + 120 min < now → sort most recently kicked off first
     let mut not_started: Vec<&Game> = Vec::new();
     let mut likely_over: Vec<&Game> = Vec::new();
 
@@ -154,26 +144,22 @@ pub async fn get_upcoming_games(State(state): State<AppState>) -> Result<Json<Ve
                     not_started.push(game);
                 }
             }
-            // Can't parse time (TBD etc.) — treat as not started
             None => not_started.push(game),
         }
     }
 
-    // Not started: soonest kickoff first
     not_started.sort_by(|a, b| {
         let ka = format!("{} {}", a.date_iso, a.time);
         let kb = format!("{} {}", b.date_iso, b.time);
         ka.cmp(&kb)
     });
 
-    // Likely over: most recent kickoff first (most relevant banter at top)
     likely_over.sort_by(|a, b| {
         let ka = format!("{} {}", a.date_iso, a.time);
         let kb = format!("{} {}", b.date_iso, b.time);
         kb.cmp(&ka)
     });
 
-    // Combine: upcoming games first, then likely-finished games at the bottom
     let mut sorted: Vec<Game> = not_started
         .into_iter()
         .chain(likely_over)
@@ -192,7 +178,7 @@ pub async fn get_upcoming_games(State(state): State<AppState>) -> Result<Json<Ve
 pub async fn update_game_score(
     State(state): State<AppState>,
     Path(match_id): Path<String>,
-    Json(payload): Json<LiveUpdate>,
+    Json(payload): Json<UpdateGameScore>,
 ) -> Result<Json<Game>> {
     let collection: Collection<Game> = state.db.collection("games");
     let filter = doc! { "match_id": &match_id };
@@ -203,6 +189,18 @@ pub async fn update_game_score(
     }
     if let Some(away_score) = payload.away_score {
         update_doc.insert("away_score", away_score);
+    }
+    if let Some(status) = &payload.status {
+        update_doc.insert("status", status);
+    }
+    if let Some(is_live) = payload.is_live {
+        update_doc.insert("is_live", is_live);
+    }
+    if let Some(time_elapsed) = payload.time_elapsed {
+        update_doc.insert("time_elapsed", time_elapsed);
+    }
+    if let Some(period) = &payload.period {
+        update_doc.insert("period", period);
     }
     update_doc.insert("scraped_at", BsonDateTime::from_chrono(Utc::now()));
 
@@ -300,17 +298,12 @@ pub async fn get_recent_games(State(state): State<AppState>) -> Result<Json<Vec<
 pub async fn update_game_status(
     State(state): State<AppState>,
     Path(match_id): Path<String>,
-    Json(payload): Json<serde_json::Value>,
+    Json(payload): Json<GameStatusUpdate>,
 ) -> Result<Json<Game>> {
     let collection: Collection<Game> = state.db.collection("games");
 
-    let status = payload
-        .get("status")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| AppError::invalid_data("Status is required"))?;
-
     let valid_statuses = ["upcoming", "live", "completed"];
-    if !valid_statuses.contains(&status) {
+    if !valid_statuses.contains(&payload.status.as_str()) {
         return Err(AppError::invalid_data(&format!(
             "Invalid status. Must be one of: {:?}",
             valid_statuses
@@ -318,10 +311,9 @@ pub async fn update_game_status(
     }
 
     let filter = doc! { "match_id": &match_id };
-    let is_live = status == "live";
     let update = doc! { "$set": {
-        "status":     status,
-        "is_live":    is_live,
+        "status": &payload.status,
+        "is_live": payload.is_live,
         "scraped_at": BsonDateTime::from_chrono(Utc::now()),
     }};
 
@@ -336,9 +328,9 @@ pub async fn update_game_status(
     }
 }
 
-// ========== FAST VOTE COUNT ENDPOINT ==========
-// This reads the vote count directly from the games collection counter
-// No need to count millions of vote documents!
+// ============================================================================
+// FAST COUNT HANDLERS
+// ============================================================================
 
 pub async fn get_fixture_vote_count_fast(
     State(state): State<AppState>,
@@ -361,15 +353,9 @@ pub async fn get_fixture_vote_count_fast(
         "timestamp": Utc::now().to_rfc3339(),
     });
 
-    println!(
-        "✅ Fixture {} has {} votes (from counter)",
-        fixture_id, game.votes
-    );
+    println!("✅ Fixture {} has {} votes", fixture_id, game.votes);
     Ok(Json(response))
 }
-
-// ========== FAST COMMENT COUNT ENDPOINT ==========
-// This reads the comment count directly from the games collection counter
 
 pub async fn get_fixture_comment_count_fast(
     State(state): State<AppState>,
@@ -395,15 +381,9 @@ pub async fn get_fixture_comment_count_fast(
         "timestamp": Utc::now().to_rfc3339(),
     });
 
-    println!(
-        "✅ Fixture {} has {} comments (from counter)",
-        fixture_id, game.comments
-    );
+    println!("✅ Fixture {} has {} comments", fixture_id, game.comments);
     Ok(Json(response))
 }
-
-// ========== FAST BOTH COUNTS ENDPOINT ==========
-// Returns both vote and comment counts in one request
 
 pub async fn get_fixture_counts_fast(
     State(state): State<AppState>,
@@ -437,11 +417,6 @@ pub async fn get_fixture_counts_fast(
     Ok(Json(response))
 }
 
-// ========== BATCH FAST COUNTS ENDPOINT ==========
-// Get counts for multiple fixtures at once
-
-// ========== GET ALL VOTERS FOR A FIXTURE (FOR VOTERS MODAL) ==========
-
 pub async fn get_fixture_voters_fast(
     State(state): State<AppState>,
     Path(fixture_id): Path<String>,
@@ -456,10 +431,9 @@ pub async fn get_fixture_voters_fast(
         .await?
         .ok_or_else(|| AppError::DocumentNotFound)?;
 
-    // Format voters for frontend
     let voters: Vec<serde_json::Value> = game
         .voters
-        .into_iter()
+        .iter()
         .map(|v| {
             json!({
                 "userId": v.user_id,
@@ -470,7 +444,6 @@ pub async fn get_fixture_voters_fast(
         })
         .collect();
 
-    // Calculate vote breakdown
     let home_votes = voters
         .iter()
         .filter(|v| v["selection"] == "home_team")
@@ -512,21 +485,16 @@ pub async fn get_batch_fixture_counts_fast(
         "📊 Getting batch counts for {} fixtures (FAST)",
         fixture_ids.len()
     );
-    println!("🔍 Fixture IDs: {:?}", fixture_ids);
 
     let games_collection: Collection<Game> = state.db.collection("games");
     let mut results = Vec::new();
     let mut error_count = 0;
 
     for fixture_id in fixture_ids {
-        println!("   🔍 Processing: {}", fixture_id);
-
         let filter = doc! { "match_id": &fixture_id };
 
-        // DON'T use ? here - handle error per item
         match games_collection.find_one(filter).await {
             Ok(Some(game)) => {
-                println!("   ✅ Found: votes={}", game.votes);
                 results.push(json!({
                     "fixture_id": fixture_id,
                     "votes": game.votes,
@@ -534,7 +502,6 @@ pub async fn get_batch_fixture_counts_fast(
                 }));
             }
             Ok(None) => {
-                println!("   ⚠️ Not found: {}", fixture_id);
                 results.push(json!({
                     "fixture_id": fixture_id,
                     "votes": 0,
@@ -543,7 +510,6 @@ pub async fn get_batch_fixture_counts_fast(
             }
             Err(e) => {
                 error_count += 1;
-                println!("   ❌ Database error for {}: {}", fixture_id, e);
                 results.push(json!({
                     "fixture_id": fixture_id,
                     "votes": 0,
@@ -562,15 +528,9 @@ pub async fn get_batch_fixture_counts_fast(
         "timestamp": Utc::now().to_rfc3339(),
     });
 
-    println!(
-        "✅ Returning batch counts for {} fixtures ({} errors)",
-        results.len(),
-        error_count
-    );
+    println!("✅ Returning batch counts for {} fixtures", results.len());
     Ok(Json(response))
 }
-
-// ========== CHECK IF USER HAS VOTED (FAST) ==========
 
 pub async fn check_user_voted_fast(
     State(state): State<AppState>,
@@ -605,6 +565,321 @@ pub async fn check_user_voted_fast(
         "user_id": user_id,
         "has_voted": has_voted,
         "selection": selection,
+    });
+
+    Ok(Json(response))
+}
+
+// ============================================================================
+// TIMELINE HANDLERS
+// ============================================================================
+
+pub async fn get_match_timeline(
+    State(state): State<AppState>,
+    Path(match_id): Path<String>,
+) -> Result<Json<Vec<TimelineEvent>>> {
+    println!("📜 GET /api/games/{}/timeline called", match_id);
+
+    let collection: Collection<TimelineEvent> = state.db.collection("timeline");
+    let filter = doc! { "match_id": &match_id };
+    let sort = doc! { "data.minute": 1 };
+
+    let cursor = collection.find(filter).sort(sort).await?;
+    let events: Vec<TimelineEvent> = cursor.try_collect().await?;
+
+    println!(
+        "✅ Fetched {} timeline events for match {}",
+        events.len(),
+        match_id
+    );
+    Ok(Json(events))
+}
+
+pub async fn get_match_timeline_by_type(
+    State(state): State<AppState>,
+    Path((match_id, event_type)): Path<(String, String)>,
+) -> Result<Json<Vec<TimelineEvent>>> {
+    println!(
+        "📜 GET /api/games/{}/timeline/{} called",
+        match_id, event_type
+    );
+
+    let collection: Collection<TimelineEvent> = state.db.collection("timeline");
+    let filter = doc! {
+        "match_id": &match_id,
+        "event_type": &event_type
+    };
+    let sort = doc! { "data.minute": 1 };
+
+    let cursor = collection.find(filter).sort(sort).await?;
+    let events: Vec<TimelineEvent> = cursor.try_collect().await?;
+
+    println!("✅ Fetched {} {} events", events.len(), event_type);
+    Ok(Json(events))
+}
+
+pub async fn get_latest_goal(
+    State(state): State<AppState>,
+    Path(match_id): Path<String>,
+) -> Result<Json<Option<TimelineEvent>>> {
+    println!("⚽ GET /api/games/{}/latest-goal called", match_id);
+
+    let collection: Collection<TimelineEvent> = state.db.collection("timeline");
+    let filter = doc! {
+        "match_id": &match_id,
+        "event_type": "goal"
+    };
+    let sort = doc! { "data.minute": -1 };
+
+    let event = collection.find_one(filter).sort(sort).await?;
+
+    Ok(Json(event))
+}
+
+pub async fn add_timeline_event(
+    State(state): State<AppState>,
+    Json(event): Json<TimelineEvent>,
+) -> Result<Json<TimelineEvent>> {
+    println!("➕ Adding timeline event for match {}", event.match_id);
+
+    let collection: Collection<TimelineEvent> = state.db.collection("timeline");
+    collection.insert_one(&event).await?;
+
+    println!("✅ Timeline event added");
+    Ok(Json(event))
+}
+
+// ============================================================================
+// STATISTICS HANDLERS
+// ============================================================================
+
+pub async fn get_match_statistics(
+    State(state): State<AppState>,
+    Path(match_id): Path<String>,
+) -> Result<Json<Vec<MatchStatistics>>> {
+    println!("📊 GET /api/games/{}/statistics called", match_id);
+
+    let collection: Collection<MatchStatistics> = state.db.collection("statistics");
+    let filter = doc! { "match_id": &match_id };
+    let sort = doc! { "minute": 1 };
+
+    let cursor = collection.find(filter).sort(sort).await?;
+    let stats: Vec<MatchStatistics> = cursor.try_collect().await?;
+
+    println!(
+        "✅ Fetched {} statistic snapshots for match {}",
+        stats.len(),
+        match_id
+    );
+    Ok(Json(stats))
+}
+
+pub async fn get_latest_statistics(
+    State(state): State<AppState>,
+    Path(match_id): Path<String>,
+) -> Result<Json<Option<MatchStatistics>>> {
+    println!("📊 GET /api/games/{}/statistics/latest called", match_id);
+
+    let collection: Collection<MatchStatistics> = state.db.collection("statistics");
+    let filter = doc! { "match_id": &match_id };
+    let sort = doc! { "minute": -1 };
+
+    let stats = collection.find_one(filter).sort(sort).await?;
+
+    Ok(Json(stats))
+}
+
+pub async fn get_statistics_at_minute(
+    State(state): State<AppState>,
+    Path((match_id, minute)): Path<(String, i32)>,
+) -> Result<Json<Option<MatchStatistics>>> {
+    println!(
+        "📊 GET /api/games/{}/statistics/{} called",
+        match_id, minute
+    );
+
+    let collection: Collection<MatchStatistics> = state.db.collection("statistics");
+    let filter = doc! {
+        "match_id": &match_id,
+        "minute": minute
+    };
+
+    let stats = collection.find_one(filter).await?;
+
+    Ok(Json(stats))
+}
+
+pub async fn add_statistics_snapshot(
+    State(state): State<AppState>,
+    Json(stats): Json<MatchStatistics>,
+) -> Result<Json<MatchStatistics>> {
+    println!(
+        "📊 Adding statistics snapshot for match {} at minute {}",
+        stats.match_id, stats.minute
+    );
+
+    let collection: Collection<MatchStatistics> = state.db.collection("statistics");
+
+    let filter = doc! {
+        "match_id": &stats.match_id,
+        "minute": stats.minute
+    };
+
+    // Convert to BSON, handling the error properly
+    let bson_stats = to_bson(&stats)
+        .map_err(|e| AppError::InternalServerError(format!("Failed to serialize stats: {}", e)))?;
+    let update = doc! { "$set": bson_stats };
+
+    collection.update_one(filter, update).upsert(true).await?;
+
+    println!("✅ Statistics snapshot saved");
+    Ok(Json(stats))
+}
+
+pub async fn bulk_update_statistics(
+    State(state): State<AppState>,
+    Json(stats_list): Json<Vec<MatchStatistics>>,
+) -> Result<Json<serde_json::Value>> {
+    println!("📊 Bulk updating {} statistics records", stats_list.len());
+
+    let collection: Collection<MatchStatistics> = state.db.collection("statistics");
+
+    let mut inserted = 0;
+    let mut updated = 0;
+
+    // Use &stats_list to borrow instead of moving
+    for stats in &stats_list {
+        let filter = doc! {
+            "match_id": &stats.match_id,
+            "minute": stats.minute
+        };
+
+        // Convert to BSON, handling the error properly
+        let bson_stats = to_bson(stats).map_err(|e| {
+            AppError::internal_server_error(format!("Failed to serialize stats: {}", e))
+        })?;
+        let update = doc! { "$set": bson_stats };
+
+        let result = collection.update_one(filter, update).upsert(true).await?;
+
+        if result.upserted_id.is_some() {
+            inserted += 1;
+        } else if result.modified_count > 0 {
+            updated += 1;
+        }
+    }
+
+    // Now stats_list is still available because we borrowed it
+    let response = json!({
+        "success": true,
+        "inserted": inserted,
+        "updated": updated,
+        "total": stats_list.len(),
+    });
+
+    Ok(Json(response))
+}
+
+// ============================================================================
+// LIVE UPDATE HANDLER (Called by Python Poller)
+// ============================================================================
+
+// In your game_routes.rs, update receive_live_update:
+pub async fn receive_live_update(
+    State(state): State<AppState>,
+    Json(update): Json<LiveGameUpdate>,
+) -> Result<Json<serde_json::Value>> {
+    println!("🔴 Live update received: {:?}", update);
+
+    // 1. Update the games collection (existing code)
+    // ... your existing update logic ...
+
+    // 2. Broadcast via WebSocket to all connected clients
+
+    match update.event_type.as_str() {
+        "goal" => {
+            let payload = json!({
+                "fixture_id": update.fixture_id,
+                "scorer": update.scorer,
+                "scored_team": update.team,
+                "home_score": update.home_score,
+                "away_score": update.away_score,
+                "minute": update.minute,
+                "player": update.player,
+                "score_display": format!("{}-{}", update.home_score, update.away_score),
+            });
+            broadcast_live_match_update(&state, &update.fixture_id, "goal", payload).await;
+        }
+        "yellow_card" => {
+            let payload = json!({
+                "fixture_id": update.fixture_id,
+                "card_type": "yellow",
+                "team": update.team,
+                "player": update.player,
+                "minute": update.minute,
+            });
+            broadcast_live_match_update(&state, &update.fixture_id, "yellow_card", payload).await;
+        }
+        "half_time" => {
+            let payload = json!({
+                "fixture_id": update.fixture_id,
+                "home_score": update.home_score,
+                "away_score": update.away_score,
+            });
+            broadcast_live_match_update(&state, &update.fixture_id, "half_time", payload).await;
+        }
+        "full_time" => {
+            let payload = json!({
+                "fixture_id": update.fixture_id,
+                "home_score": update.home_score,
+                "away_score": update.away_score,
+            });
+            broadcast_live_match_update(&state, &update.fixture_id, "full_time", payload).await;
+        }
+        _ => {}
+    }
+
+    // Also broadcast score update always
+    let score_payload = json!({
+        "fixture_id": update.fixture_id,
+        "home_score": update.home_score,
+        "away_score": update.away_score,
+        "minute": update.minute,
+    });
+    broadcast_live_match_update(&state, &update.fixture_id, "score", score_payload).await;
+
+    let response = json!({
+        "success": true,
+        "message": "Live update processed and broadcasted",
+        "fixture_id": update.fixture_id,
+        "event_type": update.event_type,
+    });
+
+    Ok(Json(response))
+}
+
+// ============================================================================
+// BULK UPDATE HANDLERS (for poller)
+// ============================================================================
+
+pub async fn bulk_add_timeline_events(
+    State(state): State<AppState>,
+    Json(events): Json<Vec<TimelineEvent>>,
+) -> Result<Json<serde_json::Value>> {
+    println!("📜 Bulk adding {} timeline events", events.len());
+
+    let collection: Collection<TimelineEvent> = state.db.collection("timeline");
+
+    let mut inserted = 0;
+    for event in &events {
+        collection.insert_one(event).await?;
+        inserted += 1;
+    }
+
+    let response = json!({
+        "success": true,
+        "inserted": inserted,
+        "total": events.len(),
     });
 
     Ok(Json(response))

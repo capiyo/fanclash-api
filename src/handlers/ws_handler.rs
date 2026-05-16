@@ -10,6 +10,8 @@ use chrono::Utc;
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::sync::Arc;
+use tokio::sync::Mutex;
 use tracing;
 
 use crate::{models::vote::Comment, state::AppState};
@@ -56,6 +58,44 @@ pub enum WSMessage {
         payload: VoteUpdatePayload,
         timestamp: String,
     },
+
+    // ========== NEW: LIVE MATCH EVENTS ==========
+    #[serde(rename = "match.goal")]
+    MatchGoal {
+        payload: GoalPayload,
+        timestamp: String,
+    },
+    #[serde(rename = "match.score")]
+    MatchScore {
+        payload: ScorePayload,
+        timestamp: String,
+    },
+    #[serde(rename = "match.card")]
+    MatchCard {
+        payload: CardPayload,
+        timestamp: String,
+    },
+    #[serde(rename = "match.half_time")]
+    MatchHalfTime {
+        payload: HalfTimePayload,
+        timestamp: String,
+    },
+    #[serde(rename = "match.full_time")]
+    MatchFullTime {
+        payload: FullTimePayload,
+        timestamp: String,
+    },
+    #[serde(rename = "match.statistics")]
+    MatchStatistics {
+        payload: StatisticsPayload,
+        timestamp: String,
+    },
+    #[serde(rename = "match.status")]
+    MatchStatus {
+        payload: StatusPayload,
+        timestamp: String,
+    },
+
     #[serde(rename = "pong")]
     Pong { timestamp: String },
     #[serde(rename = "connected")]
@@ -65,7 +105,65 @@ pub enum WSMessage {
     },
 }
 
-// ========== PAYLOAD STRUCTURES ==========
+// ========== NEW: LIVE MATCH PAYLOADS ==========
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct GoalPayload {
+    pub fixture_id: String,
+    pub scorer: String,      // "home_team" or "away_team"
+    pub scored_team: String, // Team name that scored
+    pub home_score: i32,
+    pub away_score: i32,
+    pub minute: i32,
+    pub player: Option<String>,
+    pub score_display: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ScorePayload {
+    pub fixture_id: String,
+    pub home_score: i32,
+    pub away_score: i32,
+    pub minute: i32,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct CardPayload {
+    pub fixture_id: String,
+    pub card_type: String, // "yellow" or "red"
+    pub team: String,      // Team name
+    pub player: String,
+    pub minute: i32,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct HalfTimePayload {
+    pub fixture_id: String,
+    pub home_score: i32,
+    pub away_score: i32,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct FullTimePayload {
+    pub fixture_id: String,
+    pub home_score: i32,
+    pub away_score: i32,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct StatisticsPayload {
+    pub fixture_id: String,
+    pub minute: i32,
+    pub stats: serde_json::Value,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct StatusPayload {
+    pub fixture_id: String,
+    pub status: String, // "live", "half_time", "completed"
+    pub time_elapsed: i32,
+}
+
+// ========== EXISTING PAYLOAD STRUCTURES ==========
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct CommentPayload {
     pub comment_id: String,
@@ -133,6 +231,9 @@ pub async fn ws_comments_handler(
 }
 
 // ========== PER-CONNECTION LOGIC ==========
+// ========== PER-CONNECTION LOGIC ==========
+
+// ========== PER-CONNECTION LOGIC ==========
 async fn handle_socket(
     socket: WebSocket,
     fixture_id: String,
@@ -143,7 +244,11 @@ async fn handle_socket(
     let tx = state.get_or_create_broadcaster(&fixture_id);
     let mut rx = tx.subscribe();
 
-    let (mut sender, mut receiver) = socket.split();
+    let (sender, mut receiver) = socket.split();
+
+    // Wrap sender in Arc<Mutex> to share between tasks
+    let sender = Arc::new(Mutex::new(sender));
+    let sender_clone = sender.clone();
 
     // Send welcome message
     let welcome = WSMessage::Connected {
@@ -152,10 +257,18 @@ async fn handle_socket(
     };
 
     if let Ok(welcome_json) = serde_json::to_string(&welcome) {
-        if sender.send(Message::Text(welcome_json)).await.is_err() {
+        let mut sender_guard = sender.lock().await;
+        if sender_guard
+            .send(Message::Text(welcome_json))
+            .await
+            .is_err()
+        {
             return;
         }
     }
+
+    // Send current match state immediately on connection
+    send_current_match_state(&state, &fixture_id, &sender).await;
 
     // Broadcast user online presence
     let presence = WSMessage::Presence {
@@ -178,7 +291,6 @@ async fn handle_socket(
         fixture_id
     );
 
-    // ✅ Create clones for each closure that needs them
     let fixture_id_for_send = fixture_id.clone();
     let fixture_id_for_recv = fixture_id.clone();
     let user_id_for_recv = user_id.clone();
@@ -189,7 +301,8 @@ async fn handle_socket(
         loop {
             match rx.recv().await {
                 Ok(msg) => {
-                    if sender.send(Message::Text(msg)).await.is_err() {
+                    let mut sender_guard = sender.lock().await;
+                    if sender_guard.send(Message::Text(msg)).await.is_err() {
                         break;
                     }
                 }
@@ -212,16 +325,23 @@ async fn handle_socket(
                     handle_incoming_message(
                         text,
                         &state_clone,
-                        &fixture_id_for_recv, // ✅ Use clone here
-                        &user_id_for_recv,    // ✅ Use clone here
-                        &username_for_recv,   // ✅ Use clone here
+                        &fixture_id_for_recv,
+                        &user_id_for_recv,
+                        &username_for_recv,
                         &tx_clone,
                     )
                     .await;
                 }
                 Message::Close(_) => break,
                 Message::Ping(_) => {
-                    // Axum handles ping automatically
+                    // Send pong response using sender_clone
+                    let pong = WSMessage::Pong {
+                        timestamp: Utc::now().to_rfc3339(),
+                    };
+                    if let Ok(pong_json) = serde_json::to_string(&pong) {
+                        let mut sender_guard = sender_clone.lock().await;
+                        let _ = sender_guard.send(Message::Text(pong_json)).await;
+                    }
                 }
                 _ => {}
             }
@@ -234,13 +354,13 @@ async fn handle_socket(
         _ = &mut recv_task => send_task.abort(),
     }
 
-    // Broadcast user offline presence using the original fixture_id
+    // Broadcast user offline presence
     let offline_presence = WSMessage::Presence {
         payload: PresencePayload {
             user_id,
             username,
             status: "offline".to_string(),
-            fixture_id: fixture_id_for_send, // ✅ Use clone here
+            fixture_id: fixture_id_for_send,
         },
         timestamp: Utc::now().to_rfc3339(),
     };
@@ -251,6 +371,50 @@ async fn handle_socket(
 
     tracing::info!("🔌 WS disconnected for fixture: {}", fixture_id);
 }
+
+// ========== SEND CURRENT MATCH STATE ==========
+async fn send_current_match_state(
+    state: &AppState,
+    fixture_id: &str,
+    sender: &Arc<Mutex<futures_util::stream::SplitSink<WebSocket, Message>>>,
+) {
+    let collection = state.db.collection::<crate::models::game::Game>("games");
+    let filter = doc! { "match_id": fixture_id };
+
+    if let Ok(Some(game)) = collection.find_one(filter).await {
+        // Send current score
+        let score_msg = WSMessage::MatchScore {
+            payload: ScorePayload {
+                fixture_id: fixture_id.to_string(),
+                home_score: game.home_score.unwrap_or(0),
+                away_score: game.away_score.unwrap_or(0),
+                minute: game.time_elapsed,
+            },
+            timestamp: Utc::now().to_rfc3339(),
+        };
+
+        if let Ok(score_json) = serde_json::to_string(&score_msg) {
+            let mut sender_guard = sender.lock().await;
+            let _ = sender_guard.send(Message::Text(score_json)).await;
+        }
+
+        // Send current status
+        let status_msg = WSMessage::MatchStatus {
+            payload: StatusPayload {
+                fixture_id: fixture_id.to_string(),
+                status: game.status,
+                time_elapsed: game.time_elapsed,
+            },
+            timestamp: Utc::now().to_rfc3339(),
+        };
+
+        if let Ok(status_json) = serde_json::to_string(&status_msg) {
+            let mut sender_guard = sender.lock().await;
+            let _ = sender_guard.send(Message::Text(status_json)).await;
+        }
+    }
+}
+// ========== SEND CURRENT MATCH STATE ==========
 
 // ========== HANDLE INCOMING MESSAGES ==========
 async fn handle_incoming_message(
@@ -328,11 +492,110 @@ async fn handle_incoming_message(
                 }
             }
             Some("ping") => {
-                // Ping handled in the main loop with pong response
+                let pong = WSMessage::Pong {
+                    timestamp: Utc::now().to_rfc3339(),
+                };
+                if let Ok(pong_json) = serde_json::to_string(&pong) {
+                    let _ = broadcaster.send(pong_json);
+                }
             }
             _ => {
                 tracing::debug!("Unknown message type: {:?}", message_type);
             }
+        }
+    }
+}
+
+// ========== PUBLIC BROADCAST FUNCTION (Called by Poller) ==========
+pub async fn broadcast_live_match_update(
+    state: &AppState,
+    fixture_id: &str,
+    event_type: &str,
+    data: serde_json::Value,
+) {
+    let ws_message = match event_type {
+        "goal" => {
+            if let Ok(payload) = serde_json::from_value::<GoalPayload>(data) {
+                Some(WSMessage::MatchGoal {
+                    payload,
+                    timestamp: Utc::now().to_rfc3339(),
+                })
+            } else {
+                None
+            }
+        }
+        "score" => {
+            if let Ok(payload) = serde_json::from_value::<ScorePayload>(data) {
+                Some(WSMessage::MatchScore {
+                    payload,
+                    timestamp: Utc::now().to_rfc3339(),
+                })
+            } else {
+                None
+            }
+        }
+        "yellow_card" | "red_card" => {
+            if let Ok(payload) = serde_json::from_value::<CardPayload>(data) {
+                Some(WSMessage::MatchCard {
+                    payload,
+                    timestamp: Utc::now().to_rfc3339(),
+                })
+            } else {
+                None
+            }
+        }
+        "half_time" => {
+            if let Ok(payload) = serde_json::from_value::<HalfTimePayload>(data) {
+                Some(WSMessage::MatchHalfTime {
+                    payload,
+                    timestamp: Utc::now().to_rfc3339(),
+                })
+            } else {
+                None
+            }
+        }
+        "full_time" => {
+            if let Ok(payload) = serde_json::from_value::<FullTimePayload>(data) {
+                Some(WSMessage::MatchFullTime {
+                    payload,
+                    timestamp: Utc::now().to_rfc3339(),
+                })
+            } else {
+                None
+            }
+        }
+        "statistics" => {
+            if let Ok(payload) = serde_json::from_value::<StatisticsPayload>(data) {
+                Some(WSMessage::MatchStatistics {
+                    payload,
+                    timestamp: Utc::now().to_rfc3339(),
+                })
+            } else {
+                None
+            }
+        }
+        "status" => {
+            if let Ok(payload) = serde_json::from_value::<StatusPayload>(data) {
+                Some(WSMessage::MatchStatus {
+                    payload,
+                    timestamp: Utc::now().to_rfc3339(),
+                })
+            } else {
+                None
+            }
+        }
+        _ => None,
+    };
+
+    if let Some(message) = ws_message {
+        if let Ok(json) = serde_json::to_string(&message) {
+            let tx = state.get_or_create_broadcaster(fixture_id);
+            let _ = tx.send(json);
+            tracing::info!(
+                "📡 Broadcasted {} event for fixture {}",
+                event_type,
+                fixture_id
+            );
         }
     }
 }
