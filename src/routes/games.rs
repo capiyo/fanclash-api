@@ -82,7 +82,7 @@ pub fn routes() -> Router<AppState> {
         // ========== TEST NOTIFICATION ENDPOINT ==========
         // Add this route to your routes.rs
         .route(
-            "/notifications/test",
+            "/test-notification",
             post(games::send_test_notification_from_poller),
         )
 }

@@ -33,6 +33,7 @@ pub struct TestNotificationRequest {
 // ============================================================================
 // STARTUP TEST NOTIFICATION
 // ============================================================================
+// Add this function after TestNotificationRequest and before send_startup_test_notification
 
 pub async fn send_test_notification_from_poller(
     State(state): State<AppState>,
@@ -43,6 +44,7 @@ pub async fn send_test_notification_from_poller(
     tracing::info!("  Type: {}, Message: {}", payload.r#type, payload.message);
     tracing::info!("=======================================================");
 
+    // Call your existing test notification function
     send_startup_test_notification(State(state)).await
 }
 
@@ -50,23 +52,15 @@ pub async fn send_startup_test_notification(
     State(state): State<AppState>,
 ) -> Result<Json<serde_json::Value>> {
     tracing::info!("=======================================================");
-    tracing::info!("🔔 SENDING STARTUP TEST NOTIFICATION TO ALL USERS");
+    tracing::info!("🔔 Received test notification request - processing in background");
     tracing::info!("=======================================================");
 
-    let now_eat = (Utc::now() + chrono::FixedOffset::east(3 * 3600)).format("%Y-%m-%d %H:%M:%S");
+    // Convert to String explicitly
+    let now_eat = (Utc::now() + chrono::FixedOffset::east(3 * 3600))
+        .format("%Y-%m-%d %H:%M:%S")
+        .to_string();
 
-    let fcm_tokens_col: Collection<FCMToken> = state.db.collection("fcm_tokens");
-    let cursor = fcm_tokens_col.find(doc! {}).await?;
-    let tokens: Vec<FCMToken> = cursor.try_collect().await?;
-
-    if tokens.is_empty() {
-        tracing::warn!("⚠️ No FCM tokens found to notify");
-        return Ok(Json(json!({
-            "success": false,
-            "message": "No FCM tokens found",
-            "notifications_sent": 0
-        })));
-    }
+    tracing::info!("📅 Current time (EAT): {}", now_eat);
 
     let title = "⚽ FanClash Live Poller is ACTIVE!";
     let body = format!(
@@ -75,54 +69,145 @@ pub async fn send_startup_test_notification(
     );
     let notification_type = "test_startup";
 
-    let fcm_service = state
-        .fcm_service
-        .as_ref()
-        .ok_or_else(|| AppError::InternalServerError("FCM service not initialized".to_string()))?;
+    tracing::info!("📝 Notification details:");
+    tracing::info!("   Title: {}", title);
+    tracing::info!("   Body: {}", body);
+    tracing::info!("   Type: {}", notification_type);
 
-    let mut sent_count = 0;
-    for token in &tokens {
-        match fcm_service
-            .send_to_user(
-                &state,         // 1st: AppState
-                &token.user_id, // 2nd: user_id
-                title,          // 3rd: title
-                &body,          // 4th: body
-                json!({
-                    "timestamp": now_eat.to_string(),
-                    "test": true,
-                    "type": notification_type
-                }), // 5th: data
-                notification_type, // 6th: notification_type
-            )
-            .await
-        {
-            Ok(success) => {
-                if success {
-                    sent_count += 1;
-                    tracing::info!("✅ Test notification sent to user: {}", token.user_id);
-                } else {
-                    tracing::warn!("⚠️ No tokens for user: {}", token.user_id);
-                }
+    // Clone now_eat for the background task
+    let now_eat_clone = now_eat.clone(); // ← Add this
+
+    // Clone state for background task
+    let state_clone = state.clone();
+    tracing::info!("🔄 State cloned for background task");
+
+    // Spawn background task to send notifications
+    tokio::spawn(async move {
+        tracing::info!("📱 BACKGROUND TASK STARTED - Sending test notifications...");
+        let task_start = std::time::Instant::now();
+
+        // Step 1: Query FCM tokens
+        tracing::info!("🔍 Step 1: Querying fcm_tokens collection...");
+        let fcm_tokens_col: Collection<FCMToken> = state_clone.db.collection("fcm_tokens");
+
+        let cursor = match fcm_tokens_col.find(doc! {}).await {
+            Ok(c) => {
+                tracing::info!("✅ Successfully queried fcm_tokens collection");
+                c
             }
             Err(e) => {
-                tracing::warn!("⚠️ Failed to send to user {}: {}", token.user_id, e);
+                tracing::error!("❌ Failed to query tokens: {}", e);
+                return;
             }
-        }
-        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-    }
+        };
 
-    tracing::info!("✅ Test notification sent to {} users", sent_count);
+        // Step 2: Collect tokens
+        tracing::info!("📊 Step 2: Collecting tokens...");
+        let tokens = match cursor.try_collect::<Vec<FCMToken>>().await {
+            Ok(t) => {
+                tracing::info!("✅ Collected {} FCM tokens", t.len());
+                t
+            }
+            Err(e) => {
+                tracing::error!("❌ Failed to collect tokens: {}", e);
+                return;
+            }
+        };
+
+        if tokens.is_empty() {
+            tracing::warn!("⚠️ No FCM tokens found to notify");
+            tracing::info!("💡 Tip: Users need to register their FCM token first via /api/notifications/register-token");
+            return;
+        }
+
+        // Step 3: Get FCM service
+        tracing::info!("🔧 Step 3: Getting FCM service...");
+        let fcm_service = match state_clone.fcm_service.as_ref() {
+            Some(s) => {
+                tracing::info!("✅ FCM service is available");
+                s
+            }
+            None => {
+                tracing::error!("❌ FCM service not initialized");
+                return;
+            }
+        };
+
+        // Step 4: Send notifications
+        tracing::info!(
+            "📤 Step 4: Sending notifications to {} users...",
+            tokens.len()
+        );
+        let mut sent_count = 0;
+        let mut failed_count = 0;
+        let mut no_token_count = 0;
+
+        for (index, token) in tokens.iter().enumerate() {
+            let user_start = std::time::Instant::now();
+            tracing::info!(
+                "   ┌─ User {}/{}: {}",
+                index + 1,
+                tokens.len(),
+                token.user_id
+            );
+
+            match fcm_service
+                .send_to_user(
+                    &state_clone,
+                    &token.user_id,
+                    title,
+                    &body,
+                    json!({
+                        "timestamp": now_eat_clone,  // ← Use cloned version
+                        "test": true,
+                        "type": notification_type
+                    }),
+                    notification_type,
+                )
+                .await
+            {
+                Ok(success) => {
+                    if success {
+                        sent_count += 1;
+                        tracing::info!("   │  ✅ Sent successfully in {:?}", user_start.elapsed());
+                    } else {
+                        no_token_count += 1;
+                        tracing::warn!("   │  ⚠️ No valid FCM token for user: {}", token.user_id);
+                    }
+                }
+                Err(e) => {
+                    failed_count += 1;
+                    tracing::warn!("   │  ❌ Failed to send: {}", e);
+                }
+            }
+            tracing::info!("   └─ Time: {:?}", user_start.elapsed());
+        }
+
+        // Step 5: Summary
+        let total_time = task_start.elapsed();
+        tracing::info!("═══════════════════════════════════════════════════════════════");
+        tracing::info!("📊 BACKGROUND TASK COMPLETE");
+        tracing::info!("   ✅ Sent successfully: {}", sent_count);
+        tracing::info!("   ⚠️ No token found: {}", no_token_count);
+        tracing::info!("   ❌ Failed: {}", failed_count);
+        tracing::info!("   📊 Total users processed: {}", tokens.len());
+        tracing::info!("   ⏱️  Total time: {:?}", total_time);
+        tracing::info!("═══════════════════════════════════════════════════════════════");
+    });
+
+    tracing::info!(
+        "✅ Request handler returning immediately (notifications sending in background)"
+    );
     tracing::info!("=======================================================");
 
+    // Return immediately
     Ok(Json(json!({
         "success": true,
-        "notifications_sent": sent_count,
-        "total_tokens": tokens.len(),
-        "message": "Test notification sent successfully"
+        "message": "Test notification started in background",
+        "timestamp": now_eat,  // ← Use original here
+        "total_users_pending": "check logs for details"
     })))
 }
-
 // ============================================================================
 // LINEUP AVAILABLE NOTIFICATION
 // ============================================================================
