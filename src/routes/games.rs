@@ -4,7 +4,7 @@ use axum::{
 };
 
 use crate::handlers::games;
-use crate::handlers::lineup_handler; // Add this import
+use crate::handlers::lineup_handler;
 use crate::state::AppState;
 
 pub fn routes() -> Router<AppState> {
@@ -77,6 +77,12 @@ pub fn routes() -> Router<AppState> {
             "/:match_id/lineups/available",
             get(lineup_handler::check_lineups_available),
         )
-        // ========== LIVE UPDATE ENDPOINT (Called by Python Poller) ==========
+        // ========== LIVE UPDATE ENDPOINT ==========
         .route("/live-update", post(games::receive_live_update))
+        // ========== TEST NOTIFICATION ENDPOINT ==========
+        // Add this route to your routes.rs
+        .route(
+            "/notifications/test",
+            post(games::send_test_notification_from_poller),
+        )
 }

@@ -30,14 +30,32 @@ pub struct User {
 }
 
 // ============================================================================
+// TEST NOTIFICATION REQUEST (called by poller)
+// ============================================================================
+
+#[derive(Debug, Deserialize)]
+pub struct TestNotificationRequest {
+    pub r#type: String,
+    pub message: String,
+    pub timestamp: String,
+}
+
+// ============================================================================
 // STARTUP TEST NOTIFICATION
 // ============================================================================
 
-fn separator() -> String {
-    "=".repeat(55)
-}
+pub async fn send_test_notification_from_poller(
+    State(state): State<AppState>,
+    Json(payload): Json<TestNotificationRequest>,
+) -> Result<Json<serde_json::Value>> {
+    tracing::info!("=======================================================");
+    tracing::info!("🔔 Received test notification request from poller");
+    tracing::info!("  Type: {}, Message: {}", payload.r#type, payload.message);
+    tracing::info!("=======================================================");
 
-// Then use:
+    // Call the existing test notification function
+    send_startup_test_notification(State(state)).await
+}
 
 pub async fn send_startup_test_notification(
     State(state): State<AppState>,
@@ -67,9 +85,7 @@ pub async fn send_startup_test_notification(
 
     let mut sent_count = 0;
     for user in &users {
-        // ← CHANGE HERE: use &users instead of users
         if let Some(token) = &user.device_token {
-            // ← CHANGE HERE: use &user.device_token
             if send_push_notification(
                 &state,
                 &user.user_id,
@@ -95,10 +111,11 @@ pub async fn send_startup_test_notification(
     Ok(Json(json!({
         "success": true,
         "notifications_sent": sent_count,
-        "total_users": users.len(),  // ← This now works because users is not moved
+        "total_users": users.len(),
         "message": "Test notification sent successfully"
     })))
 }
+
 // ============================================================================
 // LINEUP AVAILABLE NOTIFICATION
 // ============================================================================
@@ -132,8 +149,8 @@ pub async fn send_lineup_available_notification(
     );
 
     let mut sent_count = 0;
-    for user in users {
-        if let Some(token) = user.device_token {
+    for user in &users {
+        if let Some(token) = &user.device_token {
             if send_push_notification(
                 &state,
                 &user.user_id,
@@ -204,7 +221,6 @@ pub async fn check_and_send_hype_notifications(
     })))
 }
 
-// For send_hype_notification_to_all_users:
 async fn send_hype_notification_to_all_users(
     state: &AppState,
     game: &Game,
@@ -226,9 +242,7 @@ async fn send_hype_notification_to_all_users(
     );
 
     for user in &users {
-        // ← CHANGE HERE
         if let Some(token) = &user.device_token {
-            // ← CHANGE HERE
             send_push_notification(state, &user.user_id, &title, &body, "hype", &json!({
                 "fixture_id": game.match_id,
                 "days_until": if time_frame == "2 weeks" { 14 } else if time_frame == "1 week" { 7 } else { 1 }
@@ -307,8 +321,8 @@ async fn send_countdown_notification(
         game.home_team, game.away_team, kickoff_eat
     );
 
-    for user in users {
-        if let Some(token) = user.device_token {
+    for user in &users {
+        if let Some(token) = &user.device_token {
             send_push_notification(
                 state,
                 &user.user_id,
@@ -347,9 +361,21 @@ async fn send_push_notification(
     notification_type: &str,
     data: &serde_json::Value,
 ) -> bool {
-    // This is a placeholder - implement your actual FCM push notification logic here
-    tracing::info!("📤 Would send push to {}: {} - {}", user_id, title, body);
-    true
+    if let Some(fcm_service) = &state.fcm_service {
+        match fcm_service
+            .send_to_user(state, user_id, title, body, data.clone(), notification_type)
+            .await
+        {
+            Ok(success) => success,
+            Err(e) => {
+                tracing::error!("Failed to send push: {}", e);
+                false
+            }
+        }
+    } else {
+        tracing::warn!("FCM service not initialized");
+        false
+    }
 }
 
 // ============================================================================
