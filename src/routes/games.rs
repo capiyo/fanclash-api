@@ -1,10 +1,12 @@
 use axum::{
-    routing::{get, post, put},
+    routing::{delete, get, post, put},
     Router,
 };
 
+use crate::handlers::events_handler;
 use crate::handlers::games;
 use crate::handlers::lineup_handler;
+use crate::handlers::statistics_handler;
 use crate::state::AppState;
 
 pub fn routes() -> Router<AppState> {
@@ -45,27 +47,52 @@ pub fn routes() -> Router<AppState> {
             "/fixture/:fixture_id/user/:user_id/voted",
             get(games::check_user_voted_fast),
         )
-        // ========== TIMELINE ENDPOINTS ==========
-        .route("/:match_id/timeline", get(games::get_match_timeline))
+        // ========== EVENTS ENDPOINTS (using events_handler) ==========
+        // Get all events for a match
+        .route("/:match_id/events", get(events_handler::get_match_events))
+        // Get events by type (goals, cards, etc.)
         .route(
-            "/:match_id/timeline/:event_type",
-            get(games::get_match_timeline_by_type),
+            "/:match_id/events/:event_type",
+            get(events_handler::get_events_by_type),
         )
-        .route("/:match_id/latest-goal", get(games::get_latest_goal))
-        .route("/timeline", post(games::add_timeline_event))
-        .route("/timeline/bulk", post(games::bulk_add_timeline_events))
-        // ========== STATISTICS ENDPOINTS ==========
-        .route("/:match_id/statistics", get(games::get_match_statistics))
+        // Get latest event
+        .route(
+            "/:match_id/events/latest",
+            get(events_handler::get_latest_event),
+        )
+        // Add new event from poller (POST to /events)
+        .route("/events", post(events_handler::add_timeline_event))
+        // Delete all events for a match
+        .route(
+            "/:match_id/events",
+            delete(events_handler::delete_match_events),
+        )
+        // ========== STATISTICS ENDPOINTS (using statistics_handler) ==========
+        // Get all statistics for a match
+        .route(
+            "/:match_id/statistics",
+            get(statistics_handler::get_match_statistics),
+        )
+        // Get latest statistics snapshot
         .route(
             "/:match_id/statistics/latest",
-            get(games::get_latest_statistics),
+            get(statistics_handler::get_latest_statistics),
         )
+        // Get statistics at specific minute
         .route(
             "/:match_id/statistics/:minute",
-            get(games::get_statistics_at_minute),
+            get(statistics_handler::get_statistics_at_minute),
         )
-        .route("/statistics", post(games::add_statistics_snapshot))
-        .route("/statistics/bulk", post(games::bulk_update_statistics))
+        // Add statistics snapshot from poller (POST to /statistics)
+        .route(
+            "/statistics",
+            post(statistics_handler::add_statistics_snapshot),
+        )
+        // Bulk add statistics snapshots
+        .route(
+            "/statistics/bulk",
+            post(statistics_handler::bulk_update_statistics),
+        )
         // ========== LINEUPS ENDPOINTS ==========
         .route("/lineups", post(lineup_handler::receive_lineups_update))
         .route("/:match_id/lineups", get(lineup_handler::get_lineups))
@@ -80,7 +107,6 @@ pub fn routes() -> Router<AppState> {
         // ========== LIVE UPDATE ENDPOINT ==========
         .route("/live-update", post(games::receive_live_update))
         // ========== TEST NOTIFICATION ENDPOINT ==========
-        // Add this route to your routes.rs
         .route(
             "/test-notification",
             post(games::send_test_notification_from_poller),
