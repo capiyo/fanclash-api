@@ -2,26 +2,21 @@ use axum::{
     extract::{Path, State},
     response::Json,
 };
-use mongodb::bson::{doc, to_bson, DateTime as BsonDateTime};
+use futures_util::TryStreamExt;
+use mongodb::bson::doc;
 use mongodb::Collection;
 use serde_json::json;
 use tracing;
 
-use crate::errors::{AppError, Result};
-use crate::models::statistics::MatchStatistics;
+use crate::errors::Result;
+use crate::models::statistics::{MatchStatistics, StatisticsRequest};
 use crate::state::AppState;
-use futures_util::TryStreamExt;
 
-// ============================================================================
-// GET ALL STATISTICS FOR A MATCH
-// ============================================================================
-
+// GET all statistics for a match
 pub async fn get_match_statistics(
     State(state): State<AppState>,
     Path(match_id): Path<String>,
-) -> Result<Json<Vec<MatchStatistics>>> {
-    tracing::info!("📊 GET /api/games/{}/statistics called", match_id);
-
+) -> Result<Json<serde_json::Value>> {
     let collection: Collection<MatchStatistics> = state.db.collection("statistics");
     let filter = doc! { "match_id": &match_id };
     let sort = doc! { "minute": 1 };
@@ -29,47 +24,42 @@ pub async fn get_match_statistics(
     let cursor = collection.find(filter).sort(sort).await?;
     let stats: Vec<MatchStatistics> = cursor.try_collect().await?;
 
-    tracing::info!(
-        "✅ Fetched {} statistic snapshots for match {}",
-        stats.len(),
-        match_id
-    );
-    Ok(Json(stats))
+    Ok(Json(json!({
+        "success": true,
+        "data": stats,
+        "count": stats.len(),
+    })))
 }
 
-// ============================================================================
-// GET LATEST STATISTICS
-// ============================================================================
-
+// GET latest statistics
 pub async fn get_latest_statistics(
     State(state): State<AppState>,
     Path(match_id): Path<String>,
-) -> Result<Json<Option<MatchStatistics>>> {
-    tracing::info!("📊 GET /api/games/{}/statistics/latest called", match_id);
-
+) -> Result<Json<serde_json::Value>> {
     let collection: Collection<MatchStatistics> = state.db.collection("statistics");
     let filter = doc! { "match_id": &match_id };
     let sort = doc! { "minute": -1 };
 
     let stats = collection.find_one(filter).sort(sort).await?;
 
-    Ok(Json(stats))
+    match stats {
+        Some(s) => Ok(Json(json!({
+            "success": true,
+            "data": s,
+        }))),
+        None => Ok(Json(json!({
+            "success": false,
+            "message": "No statistics available",
+            "data": null,
+        }))),
+    }
 }
 
-// ============================================================================
-// GET STATISTICS AT SPECIFIC MINUTE
-// ============================================================================
-
+// GET statistics at specific minute
 pub async fn get_statistics_at_minute(
     State(state): State<AppState>,
     Path((match_id, minute)): Path<(String, i32)>,
-) -> Result<Json<Option<MatchStatistics>>> {
-    tracing::info!(
-        "📊 GET /api/games/{}/statistics/{} called",
-        match_id,
-        minute
-    );
-
+) -> Result<Json<serde_json::Value>> {
     let collection: Collection<MatchStatistics> = state.db.collection("statistics");
     let filter = doc! {
         "match_id": &match_id,
@@ -78,66 +68,51 @@ pub async fn get_statistics_at_minute(
 
     let stats = collection.find_one(filter).await?;
 
-    Ok(Json(stats))
+    match stats {
+        Some(s) => Ok(Json(json!({
+            "success": true,
+            "data": s,
+        }))),
+        None => Ok(Json(json!({
+            "success": false,
+            "message": format!("No statistics found for minute {}", minute),
+            "data": null,
+        }))),
+    }
 }
 
-// ============================================================================
-// ADD STATISTICS SNAPSHOT (Called by Poller)
-// ============================================================================
-
+// ADD statistics snapshot from poller
 pub async fn add_statistics_snapshot(
     State(state): State<AppState>,
-    Json(stats): Json<MatchStatistics>,
+    Json(req): Json<StatisticsRequest>,
 ) -> Result<Json<serde_json::Value>> {
-    let collection: Collection<MatchStatistics> = state.db.collection("statistics");
+    let stats = MatchStatistics::from_request(req);
 
-    // Just pass &stats - no manual conversion
+    let collection: Collection<MatchStatistics> = state.db.collection("statistics");
     collection.insert_one(&stats).await?;
 
-    Ok(Json(json!({ "success": true })))
+    Ok(Json(json!({
+        "success": true,
+        "message": "Statistics snapshot added",
+    })))
 }
 
-// ============================================================================
-// BULK UPDATE STATISTICS
-// ============================================================================
-
+// BULK add statistics
 pub async fn bulk_update_statistics(
     State(state): State<AppState>,
-    Json(stats_list): Json<Vec<MatchStatistics>>,
+    Json(requests): Json<Vec<StatisticsRequest>>,
 ) -> Result<Json<serde_json::Value>> {
-    tracing::info!("📊 Bulk updating {} statistics records", stats_list.len());
-
     let collection: Collection<MatchStatistics> = state.db.collection("statistics");
 
     let mut inserted = 0;
-    let mut updated = 0;
-
-    for stats in &stats_list {
-        let filter = doc! {
-            "match_id": &stats.match_id,
-            "minute": stats.minute
-        };
-
-        let bson_stats = to_bson(stats).map_err(|e| {
-            AppError::InternalServerError(format!("Failed to serialize stats: {}", e))
-        })?;
-        let update = doc! { "$set": bson_stats };
-
-        let result = collection.update_one(filter, update).upsert(true).await?;
-
-        if result.upserted_id.is_some() {
-            inserted += 1;
-        } else if result.modified_count > 0 {
-            updated += 1;
-        }
+    for req in requests {
+        let stats = MatchStatistics::from_request(req);
+        collection.insert_one(&stats).await?;
+        inserted += 1;
     }
 
-    let response = json!({
+    Ok(Json(json!({
         "success": true,
         "inserted": inserted,
-        "updated": updated,
-        "total": stats_list.len(),
-    });
-
-    Ok(Json(response))
+    })))
 }

@@ -1,7 +1,6 @@
 use bson::DateTime as BsonDateTime;
 use serde::{Deserialize, Serialize};
 
-// ========== STATISTICS MODEL ==========
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MatchStatistics {
     #[serde(rename = "_id")]
@@ -55,33 +54,63 @@ pub struct MatchStatistics {
     pub created_at: BsonDateTime,
 }
 
-// ========== FOR RECEIVING FROM POLLER ==========
+// Request struct from poller
 #[derive(Debug, Deserialize)]
 pub struct StatisticsRequest {
-    #[serde(rename = "fixture_id")]
-    pub fixture_id: String,
+    pub match_id: String,
     pub minute: i32,
-    #[serde(rename = "minute_display")]
     pub minute_display: String,
-    #[serde(rename = "home_score")]
     pub home_score: i32,
-    #[serde(rename = "away_score")]
     pub away_score: i32,
-    pub statistics: serde_json::Value,
-    pub timestamp: String,
+    pub ball_possession_home: i32,
+    pub ball_possession_away: i32,
+    pub total_shots_home: i32,
+    pub total_shots_away: i32,
+    pub shots_on_target_home: i32,
+    pub shots_on_target_away: i32,
+    pub corners_home: i32,
+    pub corners_away: i32,
+    pub fouls_home: i32,
+    pub fouls_away: i32,
+    pub offsides_home: i32,
+    pub offsides_away: i32,
+    pub yellow_cards_home: i32,
+    pub yellow_cards_away: i32,
+    pub red_cards_home: i32,
+    pub red_cards_away: i32,
+    pub pass_accuracy_home: i32,
+    pub pass_accuracy_away: i32,
+    pub timestamp: Option<String>,
 }
 
-// ========== FOR RESPONSES ==========
-#[derive(Debug, Serialize)]
-pub struct StatisticsResponse {
-    pub success: bool,
-    pub data: Option<MatchStatistics>,
-    pub message: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct StatisticsListResponse {
-    pub success: bool,
-    pub data: Vec<MatchStatistics>,
-    pub count: usize,
+impl MatchStatistics {
+    pub fn from_request(req: StatisticsRequest) -> Self {
+        Self {
+            id: format!("stats_{}_{}", req.match_id, req.minute),
+            match_id: req.match_id,
+            minute: req.minute,
+            minute_display: req.minute_display,
+            home_score: req.home_score,
+            away_score: req.away_score,
+            ball_possession_home: req.ball_possession_home,
+            ball_possession_away: req.ball_possession_away,
+            total_shots_home: req.total_shots_home,
+            total_shots_away: req.total_shots_away,
+            shots_on_target_home: req.shots_on_target_home,
+            shots_on_target_away: req.shots_on_target_away,
+            corners_home: req.corners_home,
+            corners_away: req.corners_away,
+            fouls_home: req.fouls_home,
+            fouls_away: req.fouls_away,
+            offsides_home: req.offsides_home,
+            offsides_away: req.offsides_away,
+            yellow_cards_home: req.yellow_cards_home,
+            yellow_cards_away: req.yellow_cards_away,
+            red_cards_home: req.red_cards_home,
+            red_cards_away: req.red_cards_away,
+            pass_accuracy_home: req.pass_accuracy_home,
+            pass_accuracy_away: req.pass_accuracy_away,
+            created_at: BsonDateTime::from_chrono(chrono::Utc::now()),
+        }
+    }
 }
