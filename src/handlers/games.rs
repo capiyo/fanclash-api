@@ -791,73 +791,133 @@ pub async fn receive_live_update(
 ) -> Result<Json<serde_json::Value>> {
     println!("🔴 Live update received: {:?}", update);
 
-    // 1. Update the games collection (existing code)
-    // ... your existing update logic ...
+    let games_col: Collection<Game> = state.db.collection("games");
+    let filter = doc! { "match_id": &update.fixture_id };
 
-    // 2. Broadcast via WebSocket to all connected clients
-
-    match update.event_type.as_str() {
-        "goal" => {
-            let payload = json!({
-                "fixture_id": update.fixture_id,
-                "scorer": update.scorer,
-                "scored_team": update.team,
-                "home_score": update.home_score,
-                "away_score": update.away_score,
-                "minute": update.minute,
-                "player": update.player,
-                "score_display": format!("{}-{}", update.home_score, update.away_score),
-            });
-            broadcast_live_match_update(&state, &update.fixture_id, "goal", payload).await;
-        }
-        "yellow_card" => {
-            let payload = json!({
-                "fixture_id": update.fixture_id,
-                "card_type": "yellow",
-                "team": update.team,
-                "player": update.player,
-                "minute": update.minute,
-            });
-            broadcast_live_match_update(&state, &update.fixture_id, "yellow_card", payload).await;
-        }
-        "half_time" => {
-            let payload = json!({
-                "fixture_id": update.fixture_id,
-                "home_score": update.home_score,
-                "away_score": update.away_score,
-            });
-            broadcast_live_match_update(&state, &update.fixture_id, "half_time", payload).await;
-        }
-        "full_time" => {
-            let payload = json!({
-                "fixture_id": update.fixture_id,
-                "home_score": update.home_score,
-                "away_score": update.away_score,
-            });
-            broadcast_live_match_update(&state, &update.fixture_id, "full_time", payload).await;
-        }
-        _ => {}
-    }
-
-    // Also broadcast score update always
-    let score_payload = json!({
-        "fixture_id": update.fixture_id,
+    // ========== 1. UPDATE GAMES COLLECTION ==========
+    let mut set_doc = doc! {
         "home_score": update.home_score,
         "away_score": update.away_score,
-        "minute": update.minute,
-    });
-    broadcast_live_match_update(&state, &update.fixture_id, "score", score_payload).await;
+        "time_elapsed": update.minute,
+        "last_polled_at": BsonDateTime::from_chrono(Utc::now()),
+    };
 
-    let response = json!({
+    if update.event_type == "goal" {
+        set_doc.insert("last_goal_at", BsonDateTime::from_chrono(Utc::now()));
+        set_doc.insert("last_goal_minute", update.minute);
+        if let Some(ref scorer) = update.scorer {
+            set_doc.insert("last_goal_scorer", scorer);
+        }
+    }
+
+    games_col
+        .update_one(filter.clone(), doc! { "$set": set_doc })
+        .await?;
+
+    // ========== 2. INSERT INTO TIMELINE COLLECTION ==========
+    if update.event_type == "goal" {
+        let timeline_col: Collection<TimelineEvent> = state.db.collection("timeline");
+
+        let timeline_data = TimelineEventData {
+            minute: Some(update.minute),
+            scorer: update.scorer.clone(),
+            scored_team: update.team.clone(),
+            player: update.player.clone(),
+            team: update.team.clone(),
+            home_score: Some(update.home_score),
+            away_score: Some(update.away_score),
+            score_display: Some(format!("{}-{}", update.home_score, update.away_score)),
+        };
+
+        let timeline_event = TimelineEvent {
+            match_id: update.fixture_id.clone(),
+            event_type: "goal".to_string(),
+            data: timeline_data,
+            timestamp: BsonDateTime::from_chrono(Utc::now()),
+        };
+
+        timeline_col.insert_one(timeline_event).await?;
+    }
+
+    // ========== 3. BROADCAST TO WEBSOCKET ==========
+    broadcast_live_match_update(
+        &state,
+        &update.fixture_id,
+        &update.event_type,
+        json!(update),
+    )
+    .await;
+
+    // ========== 4. SEND PUSH NOTIFICATIONS TO VOTERS ==========
+    if update.event_type == "goal" {
+        // Fetch the updated fixture with voters
+        if let Some(fixture) = games_col.find_one(filter).await? {
+            let voters = fixture.voters;
+
+            if !voters.is_empty() {
+                let home_team = fixture.home_team;
+                let away_team = fixture.away_team;
+                let scored_team = if update.scorer == Some("home_team".to_string()) {
+                    &home_team
+                } else {
+                    &away_team
+                };
+                let score_line = format!("{}-{}", update.home_score, update.away_score);
+
+                for voter in &voters {
+                    let (title, body, ntype) = if Some(&voter.selection) == update.scorer.as_ref() {
+                        (
+                            format!("⚽ GOAL! Your team scored!"),
+                            format!("{} scores! {} ({})", scored_team, score_line, update.minute),
+                            "goal_your_team".to_string(),
+                        )
+                    } else if voter.selection == "draw" {
+                        (
+                            format!("⚽ Goal! Draw under pressure"),
+                            format!(
+                                "{} scores → {} ({})",
+                                scored_team, score_line, update.minute
+                            ),
+                            "goal_draw_pressure".to_string(),
+                        )
+                    } else {
+                        (
+                            format!("⚔️ RIVAL SCORED!"),
+                            format!(
+                                "Your rival's team ({}) scored! {} ({})",
+                                scored_team, score_line, update.minute
+                            ),
+                            "goal_rival_team".to_string(),
+                        )
+                    };
+
+                    // Send push notification (you need to implement this)
+                    // send_push_notification(&voter.user_id, &title, &body, &ntype, &update).await;
+
+                    tracing::info!(
+                        "📲 Would send notification to {}: {} - {}",
+                        voter.user_id,
+                        title,
+                        body
+                    );
+                }
+
+                tracing::info!(
+                    "📲 Goal notifications ready for {} voters for fixture {}",
+                    voters.len(),
+                    update.fixture_id
+                );
+            }
+        }
+    }
+
+    Ok(Json(json!({
         "success": true,
-        "message": "Live update processed and broadcasted",
+        "message": "Live update processed",
         "fixture_id": update.fixture_id,
         "event_type": update.event_type,
-    });
-
-    Ok(Json(response))
+    })))
 }
-
 // ============================================================================
 // BULK UPDATE HANDLERS (for poller)
 // ============================================================================
