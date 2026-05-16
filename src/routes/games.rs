@@ -47,32 +47,28 @@ pub fn routes() -> Router<AppState> {
             "/fixture/:fixture_id/user/:user_id/voted",
             get(games::check_user_voted_fast),
         )
-        // ========== EVENTS ENDPOINTS (using events_handler) ==========
-        // Get all events for a match
+        // ========== EVENTS ENDPOINTS ==========
         .route("/:match_id/events", get(events_handler::get_match_events))
-        // Get events by type (goals, cards, etc.)
         .route(
             "/:match_id/events/:event_type",
             get(events_handler::get_events_by_type),
         )
-        // Get latest event
         .route(
             "/:match_id/events/latest",
             get(events_handler::get_latest_event),
         )
-        // Add new event from poller (POST to /events)
         .route("/events", post(events_handler::add_timeline_event))
-        // Delete all events for a match
         .route(
             "/:match_id/events",
             delete(events_handler::delete_match_events),
         )
-        // ========== STATISTICS ENDPOINTS (using statistics_handler) ==========
-        // Get all statistics for a match
+        // ========== STATISTICS ENDPOINTS ==========
+        // Add statistics snapshot (from poller)
         .route(
             "/statistics",
             post(statistics_handler::add_statistics_snapshot),
         )
+        // Get all statistics for a match
         .route(
             "/:match_id/statistics",
             get(statistics_handler::get_match_statistics),
@@ -86,11 +82,6 @@ pub fn routes() -> Router<AppState> {
         .route(
             "/:match_id/statistics/:minute",
             get(statistics_handler::get_statistics_at_minute),
-        )
-        // Add statistics snapshot from poller (POST to /statistics)
-        .route(
-            "/statistics",
-            post(statistics_handler::add_statistics_snapshot),
         )
         // Bulk add statistics snapshots
         .route(
