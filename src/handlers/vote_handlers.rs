@@ -337,6 +337,7 @@ pub async fn create_vote(
         vote_id, payload.username
     );
 
+    // ========== FCM NOTIFICATIONS ==========
     let state_clone = state.clone();
     let payload_clone = payload.clone();
 
@@ -378,6 +379,56 @@ pub async fn create_vote(
             }
         }
     });
+
+    // ========== WEB SOCKET BROADCAST - vote.update ==========
+    let tx = state.get_or_create_broadcaster(&payload.fixture_id);
+
+    // Get updated vote counts for the broadcast
+    let home_votes = vote_collection
+        .count_documents(doc! {
+            "fixture_id": &payload.fixture_id,
+            "selection": "home_team"
+        })
+        .await
+        .unwrap_or(0) as i64;
+
+    let away_votes = vote_collection
+        .count_documents(doc! {
+            "fixture_id": &payload.fixture_id,
+            "selection": "away_team"
+        })
+        .await
+        .unwrap_or(0) as i64;
+
+    let draw_votes = vote_collection
+        .count_documents(doc! {
+            "fixture_id": &payload.fixture_id,
+            "selection": "draw"
+        })
+        .await
+        .unwrap_or(0) as i64;
+
+    let vote_update = serde_json::json!({
+        "type": "vote.update",
+        "payload": {
+            "fixtureId": payload.fixture_id,
+            "userId": payload.voter_id,
+            "username": payload.username,
+            "selection": payload.selection,
+            "home_votes": home_votes,
+            "away_votes": away_votes,
+            "draw_votes": draw_votes,
+        },
+        "timestamp": Utc::now().to_rfc3339(),
+    });
+
+    if let Ok(message_json) = serde_json::to_string(&vote_update) {
+        let _ = tx.send(message_json);
+        println!(
+            "📡 Broadcasted vote.update for fixture: {}",
+            payload.fixture_id
+        );
+    }
 
     Ok(Json(VoteResponse {
         success: true,
@@ -782,6 +833,7 @@ pub async fn create_like(
             payload.fixture_id, payload.username
         );
 
+        // ========== FCM NOTIFICATIONS ==========
         let state_clone = state.clone();
         let payload_clone = payload.clone();
 
@@ -826,6 +878,25 @@ pub async fn create_like(
                 }
             }
         });
+
+        // ========== WEB SOCKET BROADCAST - like ==========
+        let tx = state.get_or_create_broadcaster(&payload.fixture_id);
+
+        let like_update = serde_json::json!({
+            "type": "like",
+            "payload": {
+                "fixtureId": payload.fixture_id,
+                "userId": payload.voter_id,
+                "username": payload.username,
+                "totalLikes": total_likes,
+            },
+            "timestamp": Utc::now().to_rfc3339(),
+        });
+
+        if let Ok(message_json) = serde_json::to_string(&like_update) {
+            let _ = tx.send(message_json);
+            println!("📡 Broadcasted like for fixture: {}", payload.fixture_id);
+        }
     }
 
     Ok(Json(LikeResponse {
@@ -979,7 +1050,6 @@ pub async fn create_comment(
         ));
     }
 
-    // NEW: Check if at least one of comment, image, or video is provided
     let has_content = !payload.comment.is_empty() || payload.is_image || payload.is_video;
     if !has_content {
         return Err(AppError::ValidationError(
@@ -990,7 +1060,6 @@ pub async fn create_comment(
     let collection: Collection<Comment> = state.db.collection("room");
     let comment_timestamp = parse_iso_timestamp_or_now(&payload.timestamp);
 
-    // NEW: Build comment with media and reply fields
     let comment = Comment {
         id: None,
         voter_id: payload.voter_id.clone(),
@@ -1004,12 +1073,10 @@ pub async fn create_comment(
         likes: Some(0),
         replies: Some(Vec::new()),
         seen_by: vec![],
-        // NEW: Media fields
         image_url: payload.image_url.clone(),
         video_url: payload.video_url.clone(),
         is_image: payload.is_image,
         is_video: payload.is_video,
-        // NEW: Reply field
         reply_to: payload.reply_to.clone(),
     };
 
@@ -1042,7 +1109,7 @@ pub async fn create_comment(
         _ => ("Unknown".to_string(), "Unknown".to_string()),
     };
 
-    // NEW: Enhanced FCM notifications with media and reply info
+    // ========== FCM NOTIFICATIONS ==========
     let state_clone = state.clone();
     let payload_clone = payload.clone();
     let comment_text = payload.comment.clone();
@@ -1110,10 +1177,11 @@ pub async fn create_comment(
         }
     });
 
-    // NEW: WebSocket broadcast with media and reply data
+    // ========== WEB SOCKET BROADCASTS - MULTIPLE EVENT TYPES ==========
     let tx = state.get_or_create_broadcaster(&payload.fixture_id);
 
-    let ws_message = serde_json::json!({
+    // 1. Broadcast as "chat.message" (for ChatScreen)
+    let chat_message = serde_json::json!({
         "type": "chat.message",
         "payload": {
             "comment_id": comment_id,
@@ -1133,11 +1201,58 @@ pub async fn create_comment(
         "timestamp": Utc::now().to_rfc3339(),
     });
 
-    if let Ok(message_json) = serde_json::to_string(&ws_message) {
+    if let Ok(message_json) = serde_json::to_string(&chat_message) {
         let _ = tx.send(message_json);
         println!(
-            "📡 Broadcasted comment via WebSocket to fixture: {}",
+            "📡 Broadcasted chat.message for fixture: {}",
             payload.fixture_id
+        );
+    }
+
+    // 2. Broadcast as "fixture.comment" (for FixturesPage - real-time comment display)
+    let fixture_comment = serde_json::json!({
+        "type": "fixture.comment",
+        "payload": {
+            "fixtureId": payload.fixture_id,
+            "comment": payload.comment,
+            "username": payload.username,
+            "selection": payload.selection,
+            "commentId": comment_id,
+            "timestamp": Utc::now().to_rfc3339(),
+        },
+        "timestamp": Utc::now().to_rfc3339(),
+    });
+
+    if let Ok(message_json) = serde_json::to_string(&fixture_comment) {
+        let _ = tx.send(message_json);
+        println!(
+            "📡 Broadcasted fixture.comment for fixture: {}",
+            payload.fixture_id
+        );
+    }
+
+    // 3. Get updated comment count and broadcast as "comment.count"
+    let comment_collection: Collection<Comment> = state.db.collection("room");
+    let comment_filter = doc! { "fixtureId": &payload.fixture_id };
+    let total_comments = match comment_collection.count_documents(comment_filter).await {
+        Ok(count) => count as i64,
+        Err(_) => 0,
+    };
+
+    let comment_count_update = serde_json::json!({
+        "type": "comment.count",
+        "payload": {
+            "fixtureId": payload.fixture_id,
+            "count": total_comments,
+        },
+        "timestamp": Utc::now().to_rfc3339(),
+    });
+
+    if let Ok(message_json) = serde_json::to_string(&comment_count_update) {
+        let _ = tx.send(message_json);
+        println!(
+            "📡 Broadcasted comment.count for fixture: {} (total: {})",
+            payload.fixture_id, total_comments
         );
     }
 
