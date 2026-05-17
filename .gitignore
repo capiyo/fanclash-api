@@ -5,7 +5,7 @@ Cargo.lock
 # Debug files
 *.pdb
 *.rlib
-*.exe
+*.exegit rm --cached .env
 *.dll
 
 # OS files
@@ -18,3 +18,7 @@ Thumbs.db
 /target/
 
 .env
+
+.env
+
+.env.*
