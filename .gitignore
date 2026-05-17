@@ -1,4 +1,4 @@
-﻿# Rust - NEVER commit these!
+﻿git commit -m "Clean commit without build artifacts"# Rust - NEVER commit these!
 target/
 Cargo.lock
 
@@ -16,3 +16,5 @@ Thumbs.db
 .vscode/
 .idea/
 /target/
+
+.env
