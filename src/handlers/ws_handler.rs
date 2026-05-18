@@ -38,6 +38,21 @@ pub enum WSMessage {
         payload: CommentPayload,
         timestamp: String,
     },
+    #[serde(rename = "chat.message")]
+    ChatMessage {
+        payload: ChatMessagePayload,
+        timestamp: String,
+    },
+    #[serde(rename = "fixture.comment")]
+    FixtureComment {
+        payload: FixtureCommentPayload,
+        timestamp: String,
+    },
+    #[serde(rename = "comment.count")]
+    CommentCount {
+        payload: CommentCountPayload,
+        timestamp: String,
+    },
     #[serde(rename = "typing")]
     Typing {
         payload: TypingPayload,
@@ -58,8 +73,13 @@ pub enum WSMessage {
         payload: VoteUpdatePayload,
         timestamp: String,
     },
+    #[serde(rename = "like")]
+    Like {
+        payload: LikePayload,
+        timestamp: String,
+    },
 
-    // ========== NEW: LIVE MATCH EVENTS ==========
+    // ========== LIVE MATCH EVENTS ==========
     #[serde(rename = "match.goal")]
     MatchGoal {
         payload: GoalPayload,
@@ -105,65 +125,7 @@ pub enum WSMessage {
     },
 }
 
-// ========== NEW: LIVE MATCH PAYLOADS ==========
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct GoalPayload {
-    pub fixture_id: String,
-    pub scorer: String,      // "home_team" or "away_team"
-    pub scored_team: String, // Team name that scored
-    pub home_score: i32,
-    pub away_score: i32,
-    pub minute: i32,
-    pub player: Option<String>,
-    pub score_display: String,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct ScorePayload {
-    pub fixture_id: String,
-    pub home_score: i32,
-    pub away_score: i32,
-    pub minute: i32,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct CardPayload {
-    pub fixture_id: String,
-    pub card_type: String, // "yellow" or "red"
-    pub team: String,      // Team name
-    pub player: String,
-    pub minute: i32,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct HalfTimePayload {
-    pub fixture_id: String,
-    pub home_score: i32,
-    pub away_score: i32,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct FullTimePayload {
-    pub fixture_id: String,
-    pub home_score: i32,
-    pub away_score: i32,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct StatisticsPayload {
-    pub fixture_id: String,
-    pub minute: i32,
-    pub stats: serde_json::Value,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct StatusPayload {
-    pub fixture_id: String,
-    pub status: String, // "live", "half_time", "completed"
-    pub time_elapsed: i32,
-}
-
-// ========== EXISTING PAYLOAD STRUCTURES ==========
+// ========== PAYLOAD STRUCTURES ==========
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct CommentPayload {
     pub comment_id: String,
@@ -174,6 +136,50 @@ pub struct CommentPayload {
     pub comment: String,
     pub timestamp: String,
     pub likes: i32,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ChatMessagePayload {
+    pub toUserId: Option<String>,
+    pub message: String,
+    pub fixtureId: String,
+    pub fromUserId: String,
+    pub username: String,
+    pub selection: String,
+    pub messageId: String,
+    pub timestamp: String,
+    pub replyTo: Option<Value>,
+    pub imageUrl: Option<String>,
+    pub videoUrl: Option<String>,
+    pub isImage: Option<bool>,
+    pub isVideo: Option<bool>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct FixtureCommentPayload {
+    pub fixtureId: String,
+    pub comment: String,
+    pub username: String,
+    pub selection: String,
+    pub userId: String,
+    pub commentId: String,
+    pub timestamp: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct CommentCountPayload {
+    pub fixtureId: String,
+    pub count: i64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct LikePayload {
+    pub fixtureId: String,
+    pub userId: String,
+    pub username: String,
+    pub action: String,
+    pub totalLikes: i64,
+    pub timestamp: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -211,6 +217,64 @@ pub struct VoteUpdatePayload {
     pub draw_votes: i64,
 }
 
+// ========== LIVE MATCH PAYLOADS ==========
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct GoalPayload {
+    pub fixture_id: String,
+    pub scorer: String,
+    pub scored_team: String,
+    pub home_score: i32,
+    pub away_score: i32,
+    pub minute: i32,
+    pub player: Option<String>,
+    pub score_display: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ScorePayload {
+    pub fixture_id: String,
+    pub home_score: i32,
+    pub away_score: i32,
+    pub minute: i32,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct CardPayload {
+    pub fixture_id: String,
+    pub card_type: String,
+    pub team: String,
+    pub player: String,
+    pub minute: i32,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct HalfTimePayload {
+    pub fixture_id: String,
+    pub home_score: i32,
+    pub away_score: i32,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct FullTimePayload {
+    pub fixture_id: String,
+    pub home_score: i32,
+    pub away_score: i32,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct StatisticsPayload {
+    pub fixture_id: String,
+    pub minute: i32,
+    pub stats: serde_json::Value,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct StatusPayload {
+    pub fixture_id: String,
+    pub status: String,
+    pub time_elapsed: i32,
+}
+
 // ========== UPGRADE HANDLER ==========
 pub async fn ws_comments_handler(
     ws: WebSocketUpgrade,
@@ -231,9 +295,6 @@ pub async fn ws_comments_handler(
 }
 
 // ========== PER-CONNECTION LOGIC ==========
-// ========== PER-CONNECTION LOGIC ==========
-
-// ========== PER-CONNECTION LOGIC ==========
 async fn handle_socket(
     socket: WebSocket,
     fixture_id: String,
@@ -245,8 +306,6 @@ async fn handle_socket(
     let mut rx = tx.subscribe();
 
     let (sender, mut receiver) = socket.split();
-
-    // Wrap sender in Arc<Mutex> to share between tasks
     let sender = Arc::new(Mutex::new(sender));
     let sender_clone = sender.clone();
 
@@ -267,7 +326,7 @@ async fn handle_socket(
         }
     }
 
-    // Send current match state immediately on connection
+    // Send current match state
     send_current_match_state(&state, &fixture_id, &sender).await;
 
     // Broadcast user online presence
@@ -334,7 +393,6 @@ async fn handle_socket(
                 }
                 Message::Close(_) => break,
                 Message::Ping(_) => {
-                    // Send pong response using sender_clone
                     let pong = WSMessage::Pong {
                         timestamp: Utc::now().to_rfc3339(),
                     };
@@ -348,7 +406,6 @@ async fn handle_socket(
         }
     });
 
-    // Wait for either task to complete
     tokio::select! {
         _ = &mut send_task => recv_task.abort(),
         _ = &mut recv_task => send_task.abort(),
@@ -382,7 +439,6 @@ async fn send_current_match_state(
     let filter = doc! { "match_id": fixture_id };
 
     if let Ok(Some(game)) = collection.find_one(filter).await {
-        // Send current score
         let score_msg = WSMessage::MatchScore {
             payload: ScorePayload {
                 fixture_id: fixture_id.to_string(),
@@ -398,7 +454,6 @@ async fn send_current_match_state(
             let _ = sender_guard.send(Message::Text(score_json)).await;
         }
 
-        // Send current status
         let status_msg = WSMessage::MatchStatus {
             payload: StatusPayload {
                 fixture_id: fixture_id.to_string(),
@@ -414,9 +469,18 @@ async fn send_current_match_state(
         }
     }
 }
-// ========== SEND CURRENT MATCH STATE ==========
 
-// ========== HANDLE INCOMING MESSAGES ==========
+// ========== HELPER FUNCTION TO GET COMMENT COUNT ==========
+async fn get_comment_count(state: &AppState, fixture_id: &str) -> i64 {
+    let collection: mongodb::Collection<Comment> = state.db.collection("room");
+    let filter = doc! { "fixtureId": fixture_id };
+    match collection.count_documents(filter).await {
+        Ok(count) => count as i64,
+        Err(_) => 0,
+    }
+}
+
+// ========== HANDLE INCOMING MESSAGES - FULL VERSION ==========
 async fn handle_incoming_message(
     text: String,
     state: &AppState,
@@ -429,6 +493,213 @@ async fn handle_incoming_message(
         let message_type = json_msg.get("type").and_then(|t| t.as_str());
 
         match message_type {
+            // ========== HANDLE CHAT.MESSAGE (from ChatScreen and FixturesPage) ==========
+            Some("chat.message") => {
+                if let Some(payload) = json_msg.get("payload") {
+                    let payload_clone = payload.clone();
+                    let fixture_id_from_payload = payload
+                        .get("fixtureId")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or(fixture_id);
+
+                    tracing::info!(
+                        "📨 Received chat.message from user {} in fixture {}",
+                        user_id,
+                        fixture_id_from_payload
+                    );
+
+                    // Broadcast chat.message to all clients in this fixture
+                    let broadcast_msg = serde_json::json!({
+                        "type": "chat.message",
+                        "payload": payload_clone,
+                        "timestamp": Utc::now().to_rfc3339(),
+                    });
+
+                    if let Ok(broadcast_json) = serde_json::to_string(&broadcast_msg) {
+                        let _ = broadcaster.send(broadcast_json);
+                        tracing::info!(
+                            "📡 Broadcasted chat.message for fixture: {}",
+                            fixture_id_from_payload
+                        );
+                    }
+
+                    // ALSO broadcast fixture.comment for FixturesPage UI update
+                    let comment_text = payload
+                        .get("message")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    let comment_username = payload
+                        .get("username")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or(username);
+                    let comment_selection = payload
+                        .get("selection")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    let comment_id = payload
+                        .get("messageId")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+
+                    let fixture_comment_msg = serde_json::json!({
+                        "type": "fixture.comment",
+                        "payload": {
+                            "fixtureId": fixture_id_from_payload,
+                            "comment": comment_text,
+                            "username": comment_username,
+                            "selection": comment_selection,
+                            "userId": user_id,
+                            "commentId": comment_id,
+                            "timestamp": Utc::now().to_rfc3339(),
+                        },
+                        "timestamp": Utc::now().to_rfc3339(),
+                    });
+
+                    if let Ok(broadcast_json) = serde_json::to_string(&fixture_comment_msg) {
+                        let _ = broadcaster.send(broadcast_json);
+                        tracing::info!(
+                            "📡 Broadcasted fixture.comment for fixture: {}",
+                            fixture_id_from_payload
+                        );
+                    }
+
+                    // ALSO broadcast updated comment count
+                    let total_comments = get_comment_count(state, fixture_id_from_payload).await;
+                    let comment_count_msg = serde_json::json!({
+                        "type": "comment.count",
+                        "payload": {
+                            "fixtureId": fixture_id_from_payload,
+                            "count": total_comments,
+                        },
+                        "timestamp": Utc::now().to_rfc3339(),
+                    });
+
+                    if let Ok(broadcast_json) = serde_json::to_string(&comment_count_msg) {
+                        let _ = broadcaster.send(broadcast_json);
+                        tracing::info!(
+                            "📡 Broadcasted comment.count for fixture: {} (total: {})",
+                            fixture_id_from_payload,
+                            total_comments
+                        );
+                    }
+                }
+            }
+
+            // ========== HANDLE FIxTURE.COMMENT (from FixturesPage) ==========
+            Some("fixture.comment") => {
+                if let Some(payload) = json_msg.get("payload") {
+                    let payload_clone = payload.clone();
+                    let fixture_id_from_payload = payload
+                        .get("fixtureId")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or(fixture_id);
+
+                    tracing::info!(
+                        "📨 Received fixture.comment from user {} in fixture {}",
+                        user_id,
+                        fixture_id_from_payload
+                    );
+
+                    // Broadcast fixture.comment
+                    let broadcast_msg = serde_json::json!({
+                        "type": "fixture.comment",
+                        "payload": payload_clone,
+                        "timestamp": Utc::now().to_rfc3339(),
+                    });
+
+                    if let Ok(broadcast_json) = serde_json::to_string(&broadcast_msg) {
+                        let _ = broadcaster.send(broadcast_json);
+                        tracing::info!(
+                            "📡 Broadcasted fixture.comment for fixture: {}",
+                            fixture_id_from_payload
+                        );
+                    }
+
+                    // Broadcast updated comment count
+                    let total_comments = get_comment_count(state, fixture_id_from_payload).await;
+                    let comment_count_msg = serde_json::json!({
+                        "type": "comment.count",
+                        "payload": {
+                            "fixtureId": fixture_id_from_payload,
+                            "count": total_comments,
+                        },
+                        "timestamp": Utc::now().to_rfc3339(),
+                    });
+
+                    if let Ok(broadcast_json) = serde_json::to_string(&comment_count_msg) {
+                        let _ = broadcaster.send(broadcast_json);
+                        tracing::info!(
+                            "📡 Broadcasted comment.count for fixture: {} (total: {})",
+                            fixture_id_from_payload,
+                            total_comments
+                        );
+                    }
+                }
+            }
+
+            // ========== HANDLE VOTE.UPDATE ==========
+            Some("vote.update") => {
+                if let Some(payload) = json_msg.get("payload") {
+                    let payload_clone = payload.clone();
+                    let fixture_id_from_payload = payload
+                        .get("fixtureId")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or(fixture_id);
+
+                    tracing::info!(
+                        "📨 Received vote.update from user {} in fixture {}",
+                        user_id,
+                        fixture_id_from_payload
+                    );
+
+                    let broadcast_msg = serde_json::json!({
+                        "type": "vote.update",
+                        "payload": payload_clone,
+                        "timestamp": Utc::now().to_rfc3339(),
+                    });
+
+                    if let Ok(broadcast_json) = serde_json::to_string(&broadcast_msg) {
+                        let _ = broadcaster.send(broadcast_json);
+                        tracing::info!(
+                            "📡 Broadcasted vote.update for fixture: {}",
+                            fixture_id_from_payload
+                        );
+                    }
+                }
+            }
+
+            // ========== HANDLE LIKE ==========
+            Some("like") => {
+                if let Some(payload) = json_msg.get("payload") {
+                    let payload_clone = payload.clone();
+                    let fixture_id_from_payload = payload
+                        .get("fixtureId")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or(fixture_id);
+
+                    tracing::info!(
+                        "📨 Received like from user {} in fixture {}",
+                        user_id,
+                        fixture_id_from_payload
+                    );
+
+                    let broadcast_msg = serde_json::json!({
+                        "type": "like",
+                        "payload": payload_clone,
+                        "timestamp": Utc::now().to_rfc3339(),
+                    });
+
+                    if let Ok(broadcast_json) = serde_json::to_string(&broadcast_msg) {
+                        let _ = broadcaster.send(broadcast_json);
+                        tracing::info!(
+                            "📡 Broadcasted like for fixture: {}",
+                            fixture_id_from_payload
+                        );
+                    }
+                }
+            }
+
+            // ========== EXISTING HANDLERS ==========
             Some("comment.new") => {
                 if let Some(payload) = json_msg.get("payload") {
                     if let Ok(comment_payload) =
@@ -465,7 +736,6 @@ async fn handle_incoming_message(
                         serde_json::from_value::<CommentReadReceipt>(payload.clone())
                     {
                         mark_comment_as_seen(state, &receipt).await;
-
                         let broadcast_msg = WSMessage::CommentSeen {
                             payload: receipt,
                             timestamp: Utc::now().to_rfc3339(),
@@ -506,7 +776,7 @@ async fn handle_incoming_message(
     }
 }
 
-// ========== PUBLIC BROADCAST FUNCTION (Called by Poller) ==========
+// ========== PUBLIC BROADCAST FUNCTION ==========
 pub async fn broadcast_live_match_update(
     state: &AppState,
     fixture_id: &str,
