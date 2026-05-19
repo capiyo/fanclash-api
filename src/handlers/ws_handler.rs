@@ -436,162 +436,7 @@ async fn handle_socket(
     tracing::info!("🔌 WS disconnected for fixture: {}", fixture_id);
 }
 
-// ========== SEND CURRENT MATCH STATE ==========
-async fn send_current_match_state(
-    state: &AppState,
-    fixture_id: &str,
-    sender: &Arc<Mutex<futures_util::stream::SplitSink<WebSocket, Message>>>,
-) {
-    let collection = state.db.collection::<crate::models::game::Game>("games");
-    let filter = doc! { "match_id": fixture_id };
-
-    if let Ok(Some(game)) = collection.find_one(filter).await {
-        let score_msg = serde_json::json!({
-            "type": "match.score",
-            "payload": {
-                "fixture_id": fixture_id,
-                "home_score": game.home_score.unwrap_or(0),
-                "away_score": game.away_score.unwrap_or(0),
-                "minute": game.time_elapsed,
-            },
-            "timestamp": Utc::now().to_rfc3339(),
-        });
-
-        if let Ok(score_json) = serde_json::to_string(&score_msg) {
-            let mut sender_guard = sender.lock().await;
-            let _ = sender_guard.send(Message::Text(score_json)).await;
-        }
-
-        let status_msg = serde_json::json!({
-            "type": "match.status",
-            "payload": {
-                "fixture_id": fixture_id,
-                "status": game.status,
-                "time_elapsed": game.time_elapsed,
-            },
-            "timestamp": Utc::now().to_rfc3339(),
-        });
-
-        if let Ok(status_json) = serde_json::to_string(&status_msg) {
-            let mut sender_guard = sender.lock().await;
-            let _ = sender_guard.send(Message::Text(status_json)).await;
-        }
-    }
-}
-
-// ========== HELPER FUNCTION TO GET COMMENT COUNT ==========
-async fn get_comment_count(state: &AppState, fixture_id: &str) -> i64 {
-    let collection: mongodb::Collection<Comment> = state.db.collection("room");
-    let filter = doc! { "fixtureId": fixture_id };
-    match collection.count_documents(filter).await {
-        Ok(count) => count as i64,
-        Err(e) => {
-            tracing::error!("Failed to get comment count: {}", e);
-            0
-        }
-    }
-}
-
-// ========== HELPER FUNCTION TO SAVE COMMENT TO DATABASE ==========
-async fn save_comment_to_database(state: &AppState, payload: &Value) -> Result<(), String> {
-    let collection: mongodb::Collection<Comment> = state.db.collection("room");
-
-    let from_user_id = payload
-        .get("fromUserId")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    let username = payload
-        .get("username")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    let fixture_id = payload
-        .get("fixtureId")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    let message = payload
-        .get("message")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    let selection = payload
-        .get("selection")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    let message_id = payload
-        .get("messageId")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-
-    // Parse reply_to as Option<ReplyData>
-    let reply_to = if let Some(reply_json) = payload.get("replyTo") {
-        match serde_json::from_value::<ReplyData>(reply_json.clone()) {
-            Ok(reply) => Some(reply),
-            Err(e) => {
-                tracing::warn!("Failed to parse replyTo: {}", e);
-                None
-            }
-        }
-    } else {
-        None
-    };
-
-    let image_url = payload
-        .get("imageUrl")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
-    let video_url = payload
-        .get("videoUrl")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
-    let is_image = payload
-        .get("isImage")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    let is_video = payload
-        .get("isVideo")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-
-    let now = Utc::now();
-    let timestamp_str = now.to_rfc3339();
-
-    let comment = Comment {
-        id: None,
-        voter_id: from_user_id,
-        username,
-        fixture_id,
-        selection,
-        comment: message,
-        timestamp: timestamp_str.clone(),
-        comment_timestamp: BsonDateTime::from_millis(now.timestamp_millis()),
-        created_at: Some(BsonDateTime::from_millis(now.timestamp_millis())),
-        likes: Some(0),
-        replies: Some(Vec::new()),
-        seen_by: vec![],
-        image_url,
-        video_url,
-        is_image,
-        is_video,
-        reply_to,
-    };
-
-    match collection.insert_one(comment).await {
-        Ok(_) => {
-            tracing::info!("✅ Comment saved to database with ID: {}", message_id);
-            Ok(())
-        }
-        Err(e) => {
-            tracing::error!("❌ Failed to save comment: {}", e);
-            Err(format!("Database error: {}", e))
-        }
-    }
-}
-
+// ========== HANDLE INCOMING MESSAGES ==========
 // ========== HANDLE INCOMING MESSAGES ==========
 async fn handle_incoming_message(
     text: String,
@@ -655,6 +500,70 @@ async fn handle_incoming_message(
                     if let Ok(count_json) = serde_json::to_string(&comment_count_msg) {
                         let _ = broadcaster.send(count_json);
                         tracing::info!("📡 Broadcasted comment.count: {}", total_comments);
+                    }
+                }
+            }
+
+            // ========== HANDLE MESSAGE.DELETE (NEW) ==========
+            Some("message.delete") => {
+                if let Some(payload) = json_msg.get("payload") {
+                    let message_id = payload
+                        .get("messageId")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    let fixture_id_from_payload = payload
+                        .get("fixtureId")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or(fixture_id);
+
+                    tracing::info!(
+                        "📨 Received message.delete for message: {} in fixture: {} from user: {}",
+                        message_id,
+                        fixture_id_from_payload,
+                        user_id
+                    );
+
+                    // ✅ Delete from database
+                    if let Err(e) = delete_comment_from_database(state, message_id).await {
+                        tracing::error!("Failed to delete comment from database: {}", e);
+                        return;
+                    }
+
+                    // ✅ Get updated count after deletion
+                    let total_comments = get_comment_count(state, fixture_id_from_payload).await;
+
+                    // ✅ Broadcast delete to all clients in the room
+                    let delete_msg = serde_json::json!({
+                        "type": "message.delete",
+                        "payload": {
+                            "messageId": message_id,
+                            "fixtureId": fixture_id_from_payload,
+                            "deletedBy": user_id,
+                        },
+                        "timestamp": Utc::now().to_rfc3339(),
+                    });
+
+                    if let Ok(delete_json) = serde_json::to_string(&delete_msg) {
+                        let _ = broadcaster.send(delete_json);
+                        tracing::info!("📡 Broadcasted message.delete for: {}", message_id);
+                    }
+
+                    // ✅ Broadcast updated comment count
+                    let comment_count_msg = serde_json::json!({
+                        "type": "comment.count",
+                        "payload": {
+                            "fixtureId": fixture_id_from_payload,
+                            "count": total_comments,
+                        },
+                        "timestamp": Utc::now().to_rfc3339(),
+                    });
+
+                    if let Ok(count_json) = serde_json::to_string(&comment_count_msg) {
+                        let _ = broadcaster.send(count_json);
+                        tracing::info!(
+                            "📡 Broadcasted comment.count after delete: {}",
+                            total_comments
+                        );
                     }
                 }
             }
@@ -831,6 +740,210 @@ async fn handle_incoming_message(
         }
     }
 }
+// ========== HELPER FUNCTION TO DELETE COMMENT FROM DATABASE ==========
+async fn delete_comment_from_database(state: &AppState, message_id: &str) -> Result<(), String> {
+    let collection: mongodb::Collection<Comment> = state.db.collection("room");
+
+    // Try to delete by messageId field (custom field from frontend)
+    let filter = doc! { "messageId": message_id };
+
+    match collection.delete_one(filter).await {
+        Ok(result) => {
+            if result.deleted_count > 0 {
+                tracing::info!("✅ Comment deleted from database with ID: {}", message_id);
+                Ok(())
+            } else {
+                // If not found by messageId, try by _id
+                if let Ok(oid) = ObjectId::parse_str(message_id) {
+                    let filter_by_id = doc! { "_id": oid };
+                    match collection.delete_one(filter_by_id).await {
+                        Ok(result) => {
+                            if result.deleted_count > 0 {
+                                tracing::info!(
+                                    "✅ Comment deleted from database by _id: {}",
+                                    message_id
+                                );
+                                Ok(())
+                            } else {
+                                tracing::warn!("❌ Comment not found for deletion: {}", message_id);
+                                Err(format!("Comment not found: {}", message_id))
+                            }
+                        }
+                        Err(e) => {
+                            tracing::error!("❌ Failed to delete comment by _id: {}", e);
+                            Err(format!("Database error: {}", e))
+                        }
+                    }
+                } else {
+                    tracing::warn!("❌ Comment not found for deletion: {}", message_id);
+                    Err(format!("Comment not found: {}", message_id))
+                }
+            }
+        }
+        Err(e) => {
+            tracing::error!("❌ Failed to delete comment: {}", e);
+            Err(format!("Database error: {}", e))
+        }
+    }
+}
+
+// ========== SEND CURRENT MATCH STATE ==========
+async fn send_current_match_state(
+    state: &AppState,
+    fixture_id: &str,
+    sender: &Arc<Mutex<futures_util::stream::SplitSink<WebSocket, Message>>>,
+) {
+    let collection = state.db.collection::<crate::models::game::Game>("games");
+    let filter = doc! { "match_id": fixture_id };
+
+    if let Ok(Some(game)) = collection.find_one(filter).await {
+        let score_msg = serde_json::json!({
+            "type": "match.score",
+            "payload": {
+                "fixture_id": fixture_id,
+                "home_score": game.home_score.unwrap_or(0),
+                "away_score": game.away_score.unwrap_or(0),
+                "minute": game.time_elapsed,
+            },
+            "timestamp": Utc::now().to_rfc3339(),
+        });
+
+        if let Ok(score_json) = serde_json::to_string(&score_msg) {
+            let mut sender_guard = sender.lock().await;
+            let _ = sender_guard.send(Message::Text(score_json)).await;
+        }
+
+        let status_msg = serde_json::json!({
+            "type": "match.status",
+            "payload": {
+                "fixture_id": fixture_id,
+                "status": game.status,
+                "time_elapsed": game.time_elapsed,
+            },
+            "timestamp": Utc::now().to_rfc3339(),
+        });
+
+        if let Ok(status_json) = serde_json::to_string(&status_msg) {
+            let mut sender_guard = sender.lock().await;
+            let _ = sender_guard.send(Message::Text(status_json)).await;
+        }
+    }
+}
+
+// ========== HELPER FUNCTION TO GET COMMENT COUNT ==========
+async fn get_comment_count(state: &AppState, fixture_id: &str) -> i64 {
+    let collection: mongodb::Collection<Comment> = state.db.collection("room");
+    let filter = doc! { "fixtureId": fixture_id };
+    match collection.count_documents(filter).await {
+        Ok(count) => count as i64,
+        Err(e) => {
+            tracing::error!("Failed to get comment count: {}", e);
+            0
+        }
+    }
+}
+
+// ========== HELPER FUNCTION TO SAVE COMMENT TO DATABASE ==========
+async fn save_comment_to_database(state: &AppState, payload: &Value) -> Result<(), String> {
+    let collection: mongodb::Collection<Comment> = state.db.collection("room");
+
+    let from_user_id = payload
+        .get("fromUserId")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let username = payload
+        .get("username")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let fixture_id = payload
+        .get("fixtureId")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let message = payload
+        .get("message")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let selection = payload
+        .get("selection")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let message_id = payload
+        .get("messageId")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    // Parse reply_to as Option<ReplyData>
+    let reply_to = if let Some(reply_json) = payload.get("replyTo") {
+        match serde_json::from_value::<ReplyData>(reply_json.clone()) {
+            Ok(reply) => Some(reply),
+            Err(e) => {
+                tracing::warn!("Failed to parse replyTo: {}", e);
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    let image_url = payload
+        .get("imageUrl")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let video_url = payload
+        .get("videoUrl")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let is_image = payload
+        .get("isImage")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let is_video = payload
+        .get("isVideo")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    let now = Utc::now();
+    let timestamp_str = now.to_rfc3339();
+
+    let comment = Comment {
+        id: None,
+        voter_id: from_user_id,
+        username,
+        fixture_id,
+        selection,
+        comment: message,
+        timestamp: timestamp_str.clone(),
+        comment_timestamp: BsonDateTime::from_millis(now.timestamp_millis()),
+        created_at: Some(BsonDateTime::from_millis(now.timestamp_millis())),
+        likes: Some(0),
+        replies: Some(Vec::new()),
+        seen_by: vec![],
+        image_url,
+        video_url,
+        is_image,
+        is_video,
+        reply_to,
+    };
+
+    match collection.insert_one(comment).await {
+        Ok(_) => {
+            tracing::info!("✅ Comment saved to database with ID: {}", message_id);
+            Ok(())
+        }
+        Err(e) => {
+            tracing::error!("❌ Failed to save comment: {}", e);
+            Err(format!("Database error: {}", e))
+        }
+    }
+}
+
+// ========== HANDLE INCOMING MESSAGES ==========
 
 // ========== PUBLIC BROADCAST FUNCTION ==========
 pub async fn broadcast_live_match_update(
