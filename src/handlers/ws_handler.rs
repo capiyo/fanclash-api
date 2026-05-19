@@ -742,98 +742,213 @@ async fn handle_incoming_message(
     }
 }
 // ========== HELPER FUNCTION TO DELETE COMMENT FROM DATABASE ==========
+// ========== FULL: save_comment_to_database ==========
+async fn save_comment_to_database(state: &AppState, payload: &Value) -> Result<(), String> {
+    let collection: mongodb::Collection<Comment> = state.db.collection("room");
+
+    let from_user_id = payload
+        .get("fromUserId")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let username = payload
+        .get("username")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let fixture_id = payload
+        .get("fixtureId")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let message = payload
+        .get("message")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let selection = payload
+        .get("selection")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let message_id = payload
+        .get("messageId")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    // ✅ Check for duplicate by messageId BEFORE inserting
+    if !message_id.is_empty() {
+        let existing = collection
+            .find_one(doc! { "messageId": &message_id })
+            .await
+            .unwrap_or(None);
+
+        if existing.is_some() {
+            tracing::warn!(
+                "⚠️ Duplicate messageId detected, skipping save: {}",
+                message_id
+            );
+            return Ok(()); // Not an error, just a duplicate
+        }
+    }
+
+    let reply_to = if let Some(reply_json) = payload.get("replyTo") {
+        match serde_json::from_value::<ReplyData>(reply_json.clone()) {
+            Ok(reply) => Some(reply),
+            Err(e) => {
+                tracing::warn!("Failed to parse replyTo: {}", e);
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    let image_url = payload
+        .get("imageUrl")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let video_url = payload
+        .get("videoUrl")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let is_image = payload
+        .get("isImage")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let is_video = payload
+        .get("isVideo")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    let now = Utc::now();
+
+    let comment = Comment {
+        id: None,
+        voter_id: from_user_id,
+        username,
+        fixture_id: fixture_id.clone(),
+        selection,
+        comment: message,
+        timestamp: now.to_rfc3339(),
+        comment_timestamp: BsonDateTime::from_millis(now.timestamp_millis()),
+        created_at: Some(BsonDateTime::from_millis(now.timestamp_millis())),
+        likes: Some(0),
+        replies: Some(Vec::new()),
+        seen_by: vec![],
+        image_url,
+        video_url,
+        is_image,
+        is_video,
+        reply_to,
+        // ✅ Store the Flutter messageId for reliable deletion later
+        message_id: if message_id.is_empty() {
+            None
+        } else {
+            Some(message_id.clone())
+        },
+    };
+
+    match collection.insert_one(comment).await {
+        Ok(_) => {
+            tracing::info!("✅ Comment saved with messageId: {}", message_id);
+
+            if !fixture_id.is_empty() {
+                let games_collection = state.db.collection::<Game>("games");
+                let game_filter = doc! { "match_id": &fixture_id };
+                let update = doc! { "$inc": { "comments": 1 } };
+
+                match games_collection.update_one(game_filter, update).await {
+                    Ok(result) => {
+                        tracing::info!(
+                            "✅ games.comments +1 for fixture {} (modified: {})",
+                            fixture_id,
+                            result.modified_count
+                        );
+                    }
+                    Err(e) => {
+                        tracing::error!("❌ Failed to update games collection: {}", e);
+                    }
+                }
+            }
+
+            Ok(())
+        }
+        Err(e) => {
+            tracing::error!("❌ Failed to save comment: {}", e);
+            Err(format!("Database error: {}", e))
+        }
+    }
+}
+
+// ========== FULL: delete_comment_from_database ==========
 async fn delete_comment_from_database(state: &AppState, message_id: &str) -> Result<(), String> {
     let collection: mongodb::Collection<Comment> = state.db.collection("room");
 
-    // First, get the fixture_id before deleting
-    let find_filter = doc! { "messageId": message_id };
-    let comment = match collection.find_one(find_filter.clone()).await {
-        Ok(Some(comment)) => Some(comment),
-        _ => None,
-    };
+    // ✅ Step 1: Try by Flutter messageId field first (most reliable)
+    let by_message_id_filter = doc! { "messageId": message_id };
+    let comment_by_msg_id = collection
+        .find_one(by_message_id_filter.clone())
+        .await
+        .unwrap_or(None);
 
-    // ✅ Clone the fixture_id before using it
-    let fixture_id = comment.as_ref().map(|c| c.fixture_id.clone());
+    if let Some(comment) = comment_by_msg_id {
+        let fixture_id = comment.fixture_id.clone();
 
-    match collection.delete_one(find_filter).await {
-        Ok(result) => {
-            if result.deleted_count > 0 {
-                tracing::info!(
-                    "✅ Comment deleted from room collection with ID: {}",
-                    message_id
-                );
+        match collection.delete_one(by_message_id_filter).await {
+            Ok(result) if result.deleted_count > 0 => {
+                tracing::info!("✅ Deleted by messageId field: {}", message_id);
+                decrement_game_comment_count(state, &fixture_id).await;
+                return Ok(());
+            }
+            _ => {}
+        }
+    }
 
-                // ✅ Use fixture_id.clone() to avoid move
-                if let Some(fid) = fixture_id.clone() {
-                    let games_collection = state.db.collection::<Game>("games");
-                    let game_filter = doc! { "match_id": &fid };
-                    let update = doc! {
-                        "$inc": { "comments": -1 }
-                    };
+    // ✅ Step 2: Try by MongoDB _id
+    if let Ok(oid) = ObjectId::parse_str(message_id) {
+        let by_oid_filter = doc! { "_id": oid };
+        let comment_by_oid = collection
+            .find_one(by_oid_filter.clone())
+            .await
+            .unwrap_or(None);
 
-                    match games_collection.update_one(game_filter, update).await {
-                        Ok(result) => {
-                            tracing::info!(
-                                "✅ Decremented games collection: comments -1 for fixture {} (modified: {})",
-                                fid,
-                                result.modified_count
-                            );
-                        }
-                        Err(e) => {
-                            tracing::error!("❌ Failed to update games collection: {}", e);
-                        }
-                    }
+        if let Some(comment) = comment_by_oid {
+            let fixture_id = comment.fixture_id.clone();
+
+            match collection.delete_one(by_oid_filter).await {
+                Ok(result) if result.deleted_count > 0 => {
+                    tracing::info!("✅ Deleted by _id: {}", message_id);
+                    decrement_game_comment_count(state, &fixture_id).await;
+                    return Ok(());
                 }
-
-                Ok(())
-            } else {
-                // If not found by messageId, try by _id
-                if let Ok(oid) = ObjectId::parse_str(message_id) {
-                    let filter_by_id = doc! { "_id": oid };
-                    let comment_by_id = match collection.find_one(filter_by_id.clone()).await {
-                        Ok(Some(comment)) => Some(comment),
-                        _ => None,
-                    };
-
-                    // ✅ Clone the fixture_id
-                    let fixture_id_by_id = comment_by_id.as_ref().map(|c| c.fixture_id.clone());
-
-                    match collection.delete_one(filter_by_id).await {
-                        Ok(result) => {
-                            if result.deleted_count > 0 {
-                                tracing::info!(
-                                    "✅ Comment deleted from room collection by _id: {}",
-                                    message_id
-                                );
-
-                                // ✅ Use clone to avoid move
-                                if let Some(fid) = fixture_id_by_id.clone() {
-                                    let games_collection = state.db.collection::<Game>("games");
-                                    let game_filter = doc! { "match_id": &fid };
-                                    let update = doc! { "$inc": { "comments": -1 } };
-                                    let _ = games_collection.update_one(game_filter, update).await;
-                                }
-
-                                Ok(())
-                            } else {
-                                tracing::warn!("❌ Comment not found for deletion: {}", message_id);
-                                Err(format!("Comment not found: {}", message_id))
-                            }
-                        }
-                        Err(e) => {
-                            tracing::error!("❌ Failed to delete comment by _id: {}", e);
-                            Err(format!("Database error: {}", e))
-                        }
-                    }
-                } else {
-                    tracing::warn!("❌ Comment not found for deletion: {}", message_id);
-                    Err(format!("Comment not found: {}", message_id))
-                }
+                _ => {}
             }
         }
+    }
+
+    tracing::warn!("⚠️ Comment not found for deletion: {}", message_id);
+    // Return Ok so we don't block the broadcast — it may already be gone
+    Ok(())
+}
+
+// ========== HELPER: decrement_game_comment_count ==========
+async fn decrement_game_comment_count(state: &AppState, fixture_id: &str) {
+    let games_collection = state.db.collection::<Game>("games");
+    let game_filter = doc! { "match_id": fixture_id };
+    let update = doc! { "$inc": { "comments": -1 } };
+
+    match games_collection.update_one(game_filter, update).await {
+        Ok(result) => {
+            tracing::info!(
+                "✅ games.comments -1 for fixture {} (modified: {})",
+                fixture_id,
+                result.modified_count
+            );
+        }
         Err(e) => {
-            tracing::error!("❌ Failed to delete comment: {}", e);
-            Err(format!("Database error: {}", e))
+            tracing::error!("❌ Failed to decrement games.comments: {}", e);
         }
     }
 }
@@ -908,134 +1023,6 @@ async fn get_comment_count(state: &AppState, fixture_id: &str) -> i64 {
     }
 }
 // ========== HELPER FUNCTION TO SAVE COMMENT TO DATABASE ==========
-async fn save_comment_to_database(state: &AppState, payload: &Value) -> Result<(), String> {
-    let collection: mongodb::Collection<Comment> = state.db.collection("room");
-
-    // Extract fields from payload
-    let from_user_id = payload
-        .get("fromUserId")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    let username = payload
-        .get("username")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    let fixture_id = payload
-        .get("fixtureId")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    let message = payload
-        .get("message")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    let selection = payload
-        .get("selection")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    let message_id = payload
-        .get("messageId")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-
-    // Parse reply_to as Option<ReplyData>
-    let reply_to = if let Some(reply_json) = payload.get("replyTo") {
-        match serde_json::from_value::<ReplyData>(reply_json.clone()) {
-            Ok(reply) => Some(reply),
-            Err(e) => {
-                tracing::warn!("Failed to parse replyTo: {}", e);
-                None
-            }
-        }
-    } else {
-        None
-    };
-
-    let image_url = payload
-        .get("imageUrl")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
-    let video_url = payload
-        .get("videoUrl")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
-    let is_image = payload
-        .get("isImage")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    let is_video = payload
-        .get("isVideo")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-
-    let now = Utc::now();
-    let timestamp_str = now.to_rfc3339();
-
-    let comment = Comment {
-        id: None,
-        voter_id: from_user_id,
-        username,
-        fixture_id: fixture_id.clone(),
-        selection,
-        comment: message,
-        timestamp: timestamp_str.clone(),
-        comment_timestamp: BsonDateTime::from_millis(now.timestamp_millis()),
-        created_at: Some(BsonDateTime::from_millis(now.timestamp_millis())),
-        likes: Some(0),
-        replies: Some(Vec::new()),
-        seen_by: vec![],
-        image_url,
-        video_url,
-        is_image,
-        is_video,
-        reply_to,
-    };
-
-    // Save to room collection
-    match collection.insert_one(comment).await {
-        Ok(_) => {
-            tracing::info!(
-                "✅ Comment saved to room collection with ID: {}",
-                message_id
-            );
-
-            // ✅ CRITICAL: Update the games collection comment count
-            if !fixture_id.is_empty() {
-                let games_collection = state.db.collection::<Game>("games");
-                let game_filter = doc! { "match_id": &fixture_id };
-
-                // Increment the comments count in games collection
-                let update = doc! {
-                    "$inc": { "comments": 1 }
-                };
-
-                match games_collection.update_one(game_filter, update).await {
-                    Ok(result) => {
-                        tracing::info!(
-                            "✅ Updated games collection: comments +1 for fixture {} (modified: {})",
-                            fixture_id,
-                            result.modified_count
-                        );
-                    }
-                    Err(e) => {
-                        tracing::error!("❌ Failed to update games collection: {}", e);
-                    }
-                }
-            }
-
-            Ok(())
-        }
-        Err(e) => {
-            tracing::error!("❌ Failed to save comment to room collection: {}", e);
-            Err(format!("Database error: {}", e))
-        }
-    }
-}
 
 // ========== HANDLE INCOMING MESSAGES ==========
 

@@ -153,6 +153,9 @@ pub struct Comment {
     #[serde(rename = "_id", skip_serializing_if = "Option::is_none")]
     pub id: Option<ObjectId>,
 
+    #[serde(rename = "messageId", skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<String>,
+
     #[serde(rename = "voterId")]
     #[validate(length(min = 1, message = "Voter ID is required"))]
     pub voter_id: String,
@@ -868,6 +871,7 @@ impl Comment {
             is_image: create_comment.is_image,
             is_video: create_comment.is_video,
             reply_to: create_comment.reply_to,
+            message_id: create_comment.message_id,
         })
     }
 

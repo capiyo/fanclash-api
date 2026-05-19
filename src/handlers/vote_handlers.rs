@@ -1078,6 +1078,7 @@ pub async fn create_comment(
         is_image: payload.is_image,
         is_video: payload.is_video,
         reply_to: payload.reply_to.clone(),
+        message_id: None, // ← HTTP comments have no Flutter messageId
     };
 
     let insert_result = collection.insert_one(comment).await?;
