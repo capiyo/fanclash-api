@@ -581,7 +581,7 @@ pub async fn get_user_unread_counts(
     Ok(Json(response))
 }
 
-// ========== FIXED: get_user_votes ==========
+// ========== CORRECTED: get_user_votes - QUERIES GAMES COLLECTION ==========
 pub async fn get_user_votes(
     State(state): State<AppState>,
     Path(user_id): Path<String>,
@@ -593,17 +593,24 @@ pub async fn get_user_votes(
 
     let games_collection: Collection<Game> = state.db.collection("games");
 
-    // Find all games where this user appears in voters array
+    // Query for games where this user exists in the voters array
     let filter = doc! { "voters.userId": &user_id };
+
     let cursor = games_collection.find(filter).await?;
     let games: Vec<Game> = cursor.try_collect().await?;
+
+    println!("📊 Found {} games with votes from this user", games.len());
 
     let mut votes = Vec::new();
 
     for game in games {
-        for voter in game.voters {
+        for voter in &game.voters {
             if voter.user_id == user_id {
-                // ✅ Clone the strings to avoid moving
+                println!(
+                    "✅ Found vote: {} voted {} in {} vs {}",
+                    voter.user_name, voter.selection, game.home_team, game.away_team
+                );
+
                 let vote = Vote {
                     id: None,
                     voter_id: voter.user_id.clone(),
@@ -622,12 +629,12 @@ pub async fn get_user_votes(
     }
 
     println!(
-        "✅ Found {} votes for user from games collection",
+        "✅ Returning {} votes for user from games collection",
         votes.len()
     );
     Ok(Json(votes))
 }
-// ========== FIXED: get_fixture_votes ==========
+
 pub async fn get_fixture_votes(
     State(state): State<AppState>,
     Path(fixture_id): Path<String>,
@@ -686,7 +693,6 @@ pub async fn get_fixture_votes(
     Ok(Json(stats))
 }
 
-// ========== FIXED: get_total_votes_for_fixture ==========
 pub async fn get_total_votes_for_fixture(
     State(state): State<AppState>,
     Path(fixture_id): Path<String>,
@@ -709,7 +715,6 @@ pub async fn get_total_votes_for_fixture(
     Ok(Json(response))
 }
 
-// ========== FIXED: get_user_vote_for_fixture ==========
 pub async fn get_user_vote_for_fixture(
     State(state): State<AppState>,
     Path((fixture_id, voter_id)): Path<(String, String)>,
@@ -719,24 +724,33 @@ pub async fn get_user_vote_for_fixture(
         voter_id, fixture_id
     );
 
-    let collection: Collection<Vote> = state.db.collection("votes");
+    let games_collection: Collection<Game> = state.db.collection("games");
     let filter = doc! {
-        "voterId": &voter_id,
-        "fixtureId": &fixture_id,
+        "match_id": &fixture_id,
+        "voters.userId": &voter_id,
     };
 
-    let vote = collection.find_one(filter).await?;
-    let has_voted = vote.is_some();
+    let game = games_collection.find_one(filter).await?;
+    let has_voted = game.is_some();
+
+    let mut selection = None;
+    if let Some(g) = game {
+        for voter in g.voters {
+            if voter.user_id == voter_id {
+                selection = Some(voter.selection);
+                break;
+            }
+        }
+    }
 
     println!("✅ User has voted: {}", has_voted);
 
     Ok(Json(json!({
         "hasVoted": has_voted,
-        "vote": vote,
+        "selection": selection,
     })))
 }
 
-// ========== FIXED: get_vote_counts_by_selection ==========
 pub async fn get_vote_counts_by_selection(
     State(state): State<AppState>,
     Path(fixture_id): Path<String>,
@@ -983,7 +997,6 @@ pub async fn create_like(
     }))
 }
 
-// ========== FIXED: get_fixture_likes ==========
 pub async fn get_fixture_likes(
     State(state): State<AppState>,
     Path(fixture_id): Path<String>,
@@ -1004,7 +1017,6 @@ pub async fn get_fixture_likes(
     Ok(Json(stats))
 }
 
-// ========== FIXED: get_total_likes_for_fixture ==========
 pub async fn get_total_likes_for_fixture(
     State(state): State<AppState>,
     Path(fixture_id): Path<String>,
@@ -1026,7 +1038,6 @@ pub async fn get_total_likes_for_fixture(
     Ok(Json(response))
 }
 
-// ========== FIXED: get_user_like_for_fixture ==========
 pub async fn get_user_like_for_fixture(
     State(state): State<AppState>,
     Path((fixture_id, voter_id)): Path<(String, String)>,
@@ -1590,7 +1601,6 @@ pub async fn get_fixture_stats(
     Ok(Json(stats))
 }
 
-// ========== FIXED: get_all_counts_for_fixture ==========
 pub async fn get_all_counts_for_fixture(
     State(state): State<AppState>,
     Path(fixture_id): Path<String>,
@@ -1738,7 +1748,6 @@ pub async fn get_total_counts(State(state): State<AppState>) -> Result<Json<Tota
     Ok(Json(response))
 }
 
-// ========== FIXED: get_batch_fixture_counts ==========
 pub async fn get_batch_fixture_counts(
     State(state): State<AppState>,
     Json(payload): Json<crate::models::vote::BatchFixtureCountsRequest>,
