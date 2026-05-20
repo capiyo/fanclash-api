@@ -55,11 +55,9 @@ async fn get_all_user_ids(state: &AppState, exclude_user_id: Option<&str>) -> Ve
 }
 
 // ============================================================================
-// MEDIA UPLOAD HANDLER (NEW - for chat images/videos)
+// MEDIA UPLOAD HANDLER (for chat images/videos)
 // ============================================================================
 
-// ========== MARK COMMENTS AS SEEN (READ RECEIPTS) ==========
-// Make sure you have this import at the top of vote_handler.rs
 pub async fn upload_chat_media(
     State(state): State<AppState>,
     mut multipart: Multipart,
@@ -70,7 +68,6 @@ pub async fn upload_chat_media(
     let mut file_name = String::new();
     let mut media_type = String::new();
 
-    // Process each field in the multipart form
     while let Ok(Some(field)) = multipart.next_field().await {
         let name = field.name().unwrap_or("").to_string();
 
@@ -111,12 +108,10 @@ pub async fn upload_chat_media(
         }
     }
 
-    // Validate file exists
     if file_data.is_empty() {
         return Err(AppError::ValidationError("No file provided".to_string()));
     }
 
-    // Validate media type
     if media_type.is_empty() {
         return Err(AppError::ValidationError(
             "Media type (image/video) is required".to_string(),
@@ -129,11 +124,10 @@ pub async fn upload_chat_media(
         ));
     }
 
-    // Validate file size
     let max_size = if media_type == "image" {
-        10 * 1024 * 1024 // 10MB for images
+        10 * 1024 * 1024
     } else {
-        50 * 1024 * 1024 // 50MB for videos
+        50 * 1024 * 1024
     };
 
     if file_data.len() > max_size {
@@ -144,7 +138,6 @@ pub async fn upload_chat_media(
         )));
     }
 
-    // Upload to Cloudinary based on media type
     let url = match media_type.as_str() {
         "image" => state.cloudinary.upload_image(file_data, &file_name).await,
         "video" => state.cloudinary.upload_video(file_data, &file_name).await,
@@ -168,10 +161,6 @@ pub async fn upload_chat_media(
         }
     }
 }
-
-// ============================================================================
-// MEDIA UPLOAD HANDLER (for chat images/videos)
-// ============================================================================
 
 pub async fn mark_comments_seen(
     State(state): State<AppState>,
@@ -337,7 +326,7 @@ pub async fn create_vote(
         vote_id, payload.username
     );
 
-    // ========== FCM NOTIFICATIONS ==========
+    // FCM NOTIFICATIONS
     let state_clone = state.clone();
     let payload_clone = payload.clone();
 
@@ -380,13 +369,12 @@ pub async fn create_vote(
         }
     });
 
-    // ========== WEB SOCKET BROADCAST - vote.update ==========
+    // WEB SOCKET BROADCAST
     let tx = state.get_or_create_broadcaster(&payload.fixture_id);
 
-    // Get updated vote counts for the broadcast
     let home_votes = vote_collection
         .count_documents(doc! {
-            "fixture_id": &payload.fixture_id,
+            "fixtureId": &payload.fixture_id,
             "selection": "home_team"
         })
         .await
@@ -394,7 +382,7 @@ pub async fn create_vote(
 
     let away_votes = vote_collection
         .count_documents(doc! {
-            "fixture_id": &payload.fixture_id,
+            "fixtureId": &payload.fixture_id,
             "selection": "away_team"
         })
         .await
@@ -402,7 +390,7 @@ pub async fn create_vote(
 
     let draw_votes = vote_collection
         .count_documents(doc! {
-            "fixture_id": &payload.fixture_id,
+            "fixtureId": &payload.fixture_id,
             "selection": "draw"
         })
         .await
@@ -448,18 +436,18 @@ pub async fn get_votes(
     let mut filter = doc! {};
 
     if let Some(fixture_id) = &query.fixture_id {
-        filter.insert("fixture_id", fixture_id);
+        filter.insert("fixtureId", fixture_id);
     }
 
     if let Some(voter_id) = &query.voter_id {
         filter.insert("voterId", voter_id);
     }
 
-    let _options = FindOptions::builder()
-        .sort(doc! { "vote_timestamp": -1 })
+    let options = FindOptions::builder()
+        .sort(doc! { "voteTimestamp": -1 })
         .build();
 
-    let cursor = collection.find(filter).await?;
+    let cursor = collection.find(filter).with_options(options).await?;
     let votes: Vec<Vote> = cursor.try_collect().await?;
 
     println!("✅ Found {} votes", votes.len());
@@ -593,6 +581,7 @@ pub async fn get_user_unread_counts(
     Ok(Json(response))
 }
 
+// ========== FIXED: get_user_votes ==========
 pub async fn get_user_votes(
     State(state): State<AppState>,
     Path(voter_id): Path<String>,
@@ -600,19 +589,22 @@ pub async fn get_user_votes(
     println!("🔍 Getting votes for user: {}", voter_id);
 
     let collection: Collection<Vote> = state.db.collection("votes");
+
+    // Use camelCase field names to match serde rename
     let filter = doc! { "voterId": voter_id };
 
-    let _options = FindOptions::builder()
-        .sort(doc! { "vote_timestamp": -1 })
+    let options = FindOptions::builder()
+        .sort(doc! { "voteTimestamp": -1 })
         .build();
 
-    let cursor = collection.find(filter).await?;
+    let cursor = collection.find(filter).with_options(options).await?;
     let votes: Vec<Vote> = cursor.try_collect().await?;
 
     println!("✅ Found {} votes for user", votes.len());
     Ok(Json(votes))
 }
 
+// ========== FIXED: get_fixture_votes ==========
 pub async fn get_fixture_votes(
     State(state): State<AppState>,
     Path(fixture_id): Path<String>,
@@ -620,7 +612,7 @@ pub async fn get_fixture_votes(
     println!("📊 Getting vote stats for fixture: {}", fixture_id);
 
     let collection: Collection<Vote> = state.db.collection("votes");
-    let filter = doc! { "fixture_id": &fixture_id };
+    let filter = doc! { "fixtureId": &fixture_id };
 
     let cursor = collection.find(filter).await?;
     let votes: Vec<Vote> = cursor.try_collect().await?;
@@ -671,6 +663,7 @@ pub async fn get_fixture_votes(
     Ok(Json(stats))
 }
 
+// ========== FIXED: get_total_votes_for_fixture ==========
 pub async fn get_total_votes_for_fixture(
     State(state): State<AppState>,
     Path(fixture_id): Path<String>,
@@ -678,7 +671,7 @@ pub async fn get_total_votes_for_fixture(
     println!("📊 Getting total vote count for fixture: {}", fixture_id);
 
     let collection: Collection<Vote> = state.db.collection("votes");
-    let filter = doc! { "fixture_id": &fixture_id };
+    let filter = doc! { "fixtureId": &fixture_id };
 
     let total_votes = collection.count_documents(filter).await? as i64;
 
@@ -693,10 +686,11 @@ pub async fn get_total_votes_for_fixture(
     Ok(Json(response))
 }
 
+// ========== FIXED: get_user_vote_for_fixture ==========
 pub async fn get_user_vote_for_fixture(
     State(state): State<AppState>,
     Path((fixture_id, voter_id)): Path<(String, String)>,
-) -> Result<Json<Option<Vote>>> {
+) -> Result<Json<serde_json::Value>> {
     println!(
         "🔍 Checking user vote: {} for fixture: {}",
         voter_id, fixture_id
@@ -704,19 +698,78 @@ pub async fn get_user_vote_for_fixture(
 
     let collection: Collection<Vote> = state.db.collection("votes");
     let filter = doc! {
-        "voterId": voter_id,
-        "fixture_id": fixture_id,
+        "voterId": &voter_id,
+        "fixtureId": &fixture_id,
     };
 
     let vote = collection.find_one(filter).await?;
+    let has_voted = vote.is_some();
 
-    if vote.is_some() {
-        println!("✅ User has voted for this fixture");
-    } else {
-        println!("❌ User has not voted for this fixture");
-    }
+    println!("✅ User has voted: {}", has_voted);
 
-    Ok(Json(vote))
+    Ok(Json(json!({
+        "hasVoted": has_voted,
+        "vote": vote,
+    })))
+}
+
+// ========== FIXED: get_vote_counts_by_selection ==========
+pub async fn get_vote_counts_by_selection(
+    State(state): State<AppState>,
+    Path(fixture_id): Path<String>,
+) -> Result<Json<serde_json::Value>> {
+    println!(
+        "📊 Getting vote counts by selection for fixture: {}",
+        fixture_id
+    );
+
+    let collection: Collection<Vote> = state.db.collection("votes");
+
+    let home_votes = collection
+        .count_documents(doc! {
+            "fixtureId": &fixture_id,
+            "selection": "home_team"
+        })
+        .await? as i64;
+
+    let draw_votes = collection
+        .count_documents(doc! {
+            "fixtureId": &fixture_id,
+            "selection": "draw"
+        })
+        .await? as i64;
+
+    let away_votes = collection
+        .count_documents(doc! {
+            "fixtureId": &fixture_id,
+            "selection": "away_team"
+        })
+        .await? as i64;
+
+    let total_votes = home_votes + draw_votes + away_votes;
+
+    let response = json!({
+        "success": true,
+        "fixture_id": fixture_id,
+        "vote_counts": {
+            "home_team": home_votes,
+            "draw": draw_votes,
+            "away_team": away_votes,
+            "total": total_votes
+        },
+        "percentages": {
+            "home": if total_votes > 0 { (home_votes as f64 / total_votes as f64) * 100.0 } else { 0.0 },
+            "draw": if total_votes > 0 { (draw_votes as f64 / total_votes as f64) * 100.0 } else { 0.0 },
+            "away": if total_votes > 0 { (away_votes as f64 / total_votes as f64) * 100.0 } else { 0.0 }
+        },
+        "timestamp": Utc::now().to_rfc3339()
+    });
+
+    println!(
+        "✅ Vote counts by selection for fixture {}: H:{} D:{} A:{}",
+        fixture_id, home_votes, draw_votes, away_votes
+    );
+    Ok(Json(response))
 }
 
 pub async fn delete_vote(
@@ -833,7 +886,7 @@ pub async fn create_like(
             payload.fixture_id, payload.username
         );
 
-        // ========== FCM NOTIFICATIONS ==========
+        // FCM NOTIFICATIONS
         let state_clone = state.clone();
         let payload_clone = payload.clone();
 
@@ -879,7 +932,7 @@ pub async fn create_like(
             }
         });
 
-        // ========== WEB SOCKET BROADCAST - like ==========
+        // WEB SOCKET BROADCAST
         let tx = state.get_or_create_broadcaster(&payload.fixture_id);
 
         let like_update = serde_json::json!({
@@ -907,6 +960,7 @@ pub async fn create_like(
     }))
 }
 
+// ========== FIXED: get_fixture_likes ==========
 pub async fn get_fixture_likes(
     State(state): State<AppState>,
     Path(fixture_id): Path<String>,
@@ -914,8 +968,7 @@ pub async fn get_fixture_likes(
     println!("👍 Getting likes for fixture: {}", fixture_id);
 
     let collection: Collection<Like> = state.db.collection("likes");
-
-    let filter = doc! { "fixture_id": &fixture_id };
+    let filter = doc! { "fixtureId": &fixture_id };
     let total_likes = collection.count_documents(filter).await? as i64;
 
     let stats = LikeStats {
@@ -928,6 +981,7 @@ pub async fn get_fixture_likes(
     Ok(Json(stats))
 }
 
+// ========== FIXED: get_total_likes_for_fixture ==========
 pub async fn get_total_likes_for_fixture(
     State(state): State<AppState>,
     Path(fixture_id): Path<String>,
@@ -935,8 +989,7 @@ pub async fn get_total_likes_for_fixture(
     println!("👍 Getting total like count for fixture: {}", fixture_id);
 
     let collection: Collection<Like> = state.db.collection("likes");
-    let filter = doc! { "fixture_id": &fixture_id };
-
+    let filter = doc! { "fixtureId": &fixture_id };
     let total_likes = collection.count_documents(filter).await? as i64;
 
     let response = json!({
@@ -950,6 +1003,7 @@ pub async fn get_total_likes_for_fixture(
     Ok(Json(response))
 }
 
+// ========== FIXED: get_user_like_for_fixture ==========
 pub async fn get_user_like_for_fixture(
     State(state): State<AppState>,
     Path((fixture_id, voter_id)): Path<(String, String)>,
@@ -961,11 +1015,11 @@ pub async fn get_user_like_for_fixture(
 
     let collection: Collection<Like> = state.db.collection("likes");
 
-    let fixture_filter = doc! { "fixture_id": &fixture_id };
+    let fixture_filter = doc! { "fixtureId": &fixture_id };
     let total_likes = collection.count_documents(fixture_filter).await? as i64;
 
     let user_like_filter = doc! {
-        "fixture_id": &fixture_id,
+        "fixtureId": &fixture_id,
         "voterId": &voter_id,
     };
     let user_has_liked = collection.find_one(user_like_filter).await?.is_some();
@@ -1009,7 +1063,7 @@ pub async fn delete_like(
         }));
     }
 
-    let fixture_filter = doc! { "fixture_id": &like.fixture_id };
+    let fixture_filter = doc! { "fixtureId": &like.fixture_id };
     let total_likes = collection.count_documents(fixture_filter).await? as i64;
 
     println!("✅ Like deleted successfully");
@@ -1021,7 +1075,7 @@ pub async fn delete_like(
     }))
 }
 
-// ========== COMMENT HANDLERS - UPDATED WITH MEDIA & REPLY ==========
+// ========== COMMENT HANDLERS ==========
 
 pub async fn create_comment(
     State(state): State<AppState>,
@@ -1078,7 +1132,7 @@ pub async fn create_comment(
         is_image: payload.is_image,
         is_video: payload.is_video,
         reply_to: payload.reply_to.clone(),
-        message_id: payload.message_id.clone(), // ✅ CHANGE THIS LINE
+        message_id: payload.message_id.clone(),
     };
 
     let insert_result = collection.insert_one(comment).await?;
@@ -1110,7 +1164,7 @@ pub async fn create_comment(
         _ => ("Unknown".to_string(), "Unknown".to_string()),
     };
 
-    // ========== FCM NOTIFICATIONS ==========
+    // FCM NOTIFICATIONS
     let state_clone = state.clone();
     let payload_clone = payload.clone();
     let comment_text = payload.comment.clone();
@@ -1178,10 +1232,9 @@ pub async fn create_comment(
         }
     });
 
-    // ========== WEB SOCKET BROADCASTS - MULTIPLE EVENT TYPES ==========
+    // WEB SOCKET BROADCASTS
     let tx = state.get_or_create_broadcaster(&payload.fixture_id);
 
-    // 1. Broadcast as "chat.message" (for ChatScreen)
     let chat_message = serde_json::json!({
         "type": "chat.message",
         "payload": {
@@ -1210,7 +1263,6 @@ pub async fn create_comment(
         );
     }
 
-    // 2. Broadcast as "fixture.comment" (for FixturesPage - real-time comment display)
     let fixture_comment = serde_json::json!({
         "type": "fixture.comment",
         "payload": {
@@ -1232,7 +1284,6 @@ pub async fn create_comment(
         );
     }
 
-    // 3. Get updated comment count and broadcast as "comment.count"
     let comment_collection: Collection<Comment> = state.db.collection("room");
     let comment_filter = doc! { "fixtureId": &payload.fixture_id };
     let total_comments = match comment_collection.count_documents(comment_filter).await {
@@ -1286,11 +1337,11 @@ pub async fn get_comments(
         filter.insert("selection", selection);
     }
 
-    let _options = FindOptions::builder()
-        .sort(doc! { "comment_timestamp": -1 })
+    let options = FindOptions::builder()
+        .sort(doc! { "commentTimestamp": -1 })
         .build();
 
-    let cursor = collection.find(filter).await?;
+    let cursor = collection.find(filter).with_options(options).await?;
     let comments: Vec<Comment> = cursor.try_collect().await?;
 
     println!("✅ Found {} comments", comments.len());
@@ -1304,14 +1355,14 @@ pub async fn get_fixture_comments(
     println!("💬 Getting comments for fixture: {}", fixture_id);
 
     let collection: Collection<Comment> = state.db.collection("room");
-    let filter = doc! { "fixture_id": &fixture_id };
+    let filter = doc! { "fixtureId": &fixture_id };
 
-    let _options = FindOptions::builder()
-        .sort(doc! { "comment_timestamp": -1 })
+    let options = FindOptions::builder()
+        .sort(doc! { "commentTimestamp": -1 })
         .limit(20)
         .build();
 
-    let cursor = collection.find(filter).await?;
+    let cursor = collection.find(filter).with_options(options).await?;
     let all_comments: Vec<Comment> = cursor.try_collect().await?;
 
     let total_comments = all_comments.len() as i64;
@@ -1352,8 +1403,7 @@ pub async fn get_total_comments_for_fixture(
     println!("💬 Getting total comment count for fixture: {}", fixture_id);
 
     let collection: Collection<Comment> = state.db.collection("room");
-    let filter = doc! { "fixture_id": &fixture_id };
-
+    let filter = doc! { "fixtureId": &fixture_id };
     let total_comments = collection.count_documents(filter).await? as i64;
 
     let response = json!({
@@ -1379,11 +1429,11 @@ pub async fn get_user_comments(
     let collection: Collection<Comment> = state.db.collection("room");
     let filter = doc! { "voterId": voter_id };
 
-    let _options = FindOptions::builder()
-        .sort(doc! { "comment_timestamp": -1 })
+    let options = FindOptions::builder()
+        .sort(doc! { "commentTimestamp": -1 })
         .build();
 
-    let cursor = collection.find(filter).await?;
+    let cursor = collection.find(filter).with_options(options).await?;
     let comments: Vec<Comment> = cursor.try_collect().await?;
 
     println!("✅ Found {} comments for user", comments.len());
@@ -1517,6 +1567,7 @@ pub async fn get_fixture_stats(
     Ok(Json(stats))
 }
 
+// ========== FIXED: get_all_counts_for_fixture ==========
 pub async fn get_all_counts_for_fixture(
     State(state): State<AppState>,
     Path(fixture_id): Path<String>,
@@ -1525,36 +1576,36 @@ pub async fn get_all_counts_for_fixture(
 
     let vote_collection: Collection<Vote> = state.db.collection("votes");
     let like_collection: Collection<Like> = state.db.collection("likes");
-    let comment_collection: Collection<Comment> = state.db.collection("comments");
+    let comment_collection: Collection<Comment> = state.db.collection("room");
 
-    let vote_filter = doc! { "fixture_id": &fixture_id };
+    let vote_filter = doc! { "fixtureId": &fixture_id };
     let total_votes = vote_collection.count_documents(vote_filter.clone()).await? as i64;
 
     let home_votes = vote_collection
         .count_documents(doc! {
-            "fixture_id": &fixture_id,
+            "fixtureId": &fixture_id,
             "selection": "home_team"
         })
         .await? as i64;
 
     let draw_votes = vote_collection
         .count_documents(doc! {
-            "fixture_id": &fixture_id,
+            "fixtureId": &fixture_id,
             "selection": "draw"
         })
         .await? as i64;
 
     let away_votes = vote_collection
         .count_documents(doc! {
-            "fixture_id": &fixture_id,
+            "fixtureId": &fixture_id,
             "selection": "away_team"
         })
         .await? as i64;
 
-    let like_filter = doc! { "fixture_id": &fixture_id };
+    let like_filter = doc! { "fixtureId": &fixture_id };
     let total_likes = like_collection.count_documents(like_filter).await? as i64;
 
-    let comment_filter = doc! { "fixture_id": &fixture_id };
+    let comment_filter = doc! { "fixtureId": &fixture_id };
     let total_comments = comment_collection.count_documents(comment_filter).await? as i64;
 
     let first_vote = vote_collection.find_one(vote_filter).await?;
@@ -1609,7 +1660,7 @@ pub async fn get_user_stats(
     let like_filter = doc! { "voterId": &voter_id };
     let likes_count = like_collection.count_documents(like_filter).await? as i64;
 
-    let comment_collection: Collection<Comment> = state.db.collection("comments");
+    let comment_collection: Collection<Comment> = state.db.collection("room");
     let comment_filter = doc! { "voterId": &voter_id };
     let comments_count = comment_collection.count_documents(comment_filter).await? as i64;
 
@@ -1633,7 +1684,7 @@ pub async fn get_total_counts(State(state): State<AppState>) -> Result<Json<Tota
 
     let vote_collection: Collection<Vote> = state.db.collection("votes");
     let like_collection: Collection<Like> = state.db.collection("likes");
-    let comment_collection: Collection<Comment> = state.db.collection("comments");
+    let comment_collection: Collection<Comment> = state.db.collection("room");
 
     let total_votes = vote_collection.estimated_document_count().await? as i64;
     let total_likes = like_collection.estimated_document_count().await? as i64;
@@ -1664,6 +1715,7 @@ pub async fn get_total_counts(State(state): State<AppState>) -> Result<Json<Tota
     Ok(Json(response))
 }
 
+// ========== FIXED: get_batch_fixture_counts ==========
 pub async fn get_batch_fixture_counts(
     State(state): State<AppState>,
     Json(payload): Json<crate::models::vote::BatchFixtureCountsRequest>,
@@ -1675,39 +1727,39 @@ pub async fn get_batch_fixture_counts(
 
     let vote_collection: Collection<Vote> = state.db.collection("votes");
     let like_collection: Collection<Like> = state.db.collection("likes");
-    let comment_collection: Collection<Comment> = state.db.collection("comments");
+    let comment_collection: Collection<Comment> = state.db.collection("room");
 
     let mut fixture_counts = Vec::new();
 
     for fixture_id in payload.fixture_ids {
-        let vote_filter = doc! { "fixture_id": &fixture_id };
+        let vote_filter = doc! { "fixtureId": &fixture_id };
         let total_votes = vote_collection.count_documents(vote_filter.clone()).await? as i64;
 
         let home_votes = vote_collection
             .count_documents(doc! {
-                "fixture_id": &fixture_id,
+                "fixtureId": &fixture_id,
                 "selection": "home_team"
             })
             .await? as i64;
 
         let draw_votes = vote_collection
             .count_documents(doc! {
-                "fixture_id": &fixture_id,
+                "fixtureId": &fixture_id,
                 "selection": "draw"
             })
             .await? as i64;
 
         let away_votes = vote_collection
             .count_documents(doc! {
-                "fixture_id": &fixture_id,
+                "fixtureId": &fixture_id,
                 "selection": "away_team"
             })
             .await? as i64;
 
-        let like_filter = doc! { "fixture_id": &fixture_id };
+        let like_filter = doc! { "fixtureId": &fixture_id };
         let total_likes = like_collection.count_documents(like_filter).await? as i64;
 
-        let comment_filter = doc! { "fixture_id": &fixture_id };
+        let comment_filter = doc! { "fixtureId": &fixture_id };
         let total_comments = comment_collection.count_documents(comment_filter).await? as i64;
 
         let first_vote = vote_collection.find_one(vote_filter).await?;
@@ -1725,7 +1777,7 @@ pub async fn get_batch_fixture_counts(
 
         if let Some(user_id) = &payload.user_id {
             let user_vote_filter = doc! {
-                "fixture_id": &fixture_id,
+                "fixtureId": &fixture_id,
                 "voterId": user_id,
             };
             let user_vote = vote_collection.find_one(user_vote_filter).await?;
@@ -1733,7 +1785,7 @@ pub async fn get_batch_fixture_counts(
             user_selection = user_vote.map(|v| v.selection);
 
             let user_like_filter = doc! {
-                "fixture_id": &fixture_id,
+                "fixtureId": &fixture_id,
                 "voterId": user_id,
             };
             let user_like = like_collection.find_one(user_like_filter).await?;
@@ -1780,7 +1832,7 @@ pub async fn cleanup_old_votes(State(state): State<AppState>) -> Result<Json<ser
     let cutoff_bson = BsonDateTime::from_chrono(cutoff_date);
 
     let filter = doc! {
-        "vote_timestamp": {
+        "voteTimestamp": {
             "$lt": cutoff_bson
         }
     };
@@ -1806,7 +1858,7 @@ pub async fn get_overview_stats(State(state): State<AppState>) -> Result<Json<se
 
     let vote_collection: Collection<Vote> = state.db.collection("votes");
     let like_collection: Collection<Like> = state.db.collection("likes");
-    let comment_collection: Collection<Comment> = state.db.collection("comments");
+    let comment_collection: Collection<Comment> = state.db.collection("room");
 
     let total_votes = vote_collection.estimated_document_count().await? as i64;
     let total_likes = like_collection.estimated_document_count().await? as i64;
@@ -1840,7 +1892,7 @@ pub async fn get_overview_stats(State(state): State<AppState>) -> Result<Json<se
 
     let today_votes = vote_collection
         .count_documents(doc! {
-            "vote_timestamp": {
+            "voteTimestamp": {
                 "$gte": today_start_bson,
                 "$lte": today_end_bson
             }
@@ -1897,7 +1949,7 @@ pub async fn get_comment_counts_for_multiple_fixtures(
     let mut result = serde_json::Map::new();
 
     for fixture_id in fixture_ids {
-        let filter = doc! { "fixture_id": &fixture_id };
+        let filter = doc! { "fixtureId": &fixture_id };
         let count = collection.count_documents(filter).await? as i64;
         result.insert(fixture_id, serde_json::Value::Number(count.into()));
     }
@@ -1917,7 +1969,7 @@ pub async fn get_total_likes_for_multiple_fixtures(
     let mut result = serde_json::Map::new();
 
     for fixture_id in fixture_ids {
-        let filter = doc! { "fixture_id": &fixture_id };
+        let filter = doc! { "fixtureId": &fixture_id };
         let count = collection.count_documents(filter).await? as i64;
         result.insert(fixture_id, serde_json::Value::Number(count.into()));
     }
@@ -1975,52 +2027,50 @@ pub async fn get_realtime_vote_updates(
 
     let vote_collection: Collection<Vote> = state.db.collection("votes");
     let like_collection: Collection<Like> = state.db.collection("likes");
-    let comment_collection: Collection<Comment> = state.db.collection("comments");
+    let comment_collection: Collection<Comment> = state.db.collection("room");
 
     let home_votes = vote_collection
         .count_documents(doc! {
-            "fixture_id": &fixture_id,
+            "fixtureId": &fixture_id,
             "selection": "home_team"
         })
         .await? as i64;
 
     let draw_votes = vote_collection
         .count_documents(doc! {
-            "fixture_id": &fixture_id,
+            "fixtureId": &fixture_id,
             "selection": "draw"
         })
         .await? as i64;
 
     let away_votes = vote_collection
         .count_documents(doc! {
-            "fixture_id": &fixture_id,
+            "fixtureId": &fixture_id,
             "selection": "away_team"
         })
         .await? as i64;
 
     let like_count = like_collection
-        .count_documents(doc! {
-            "fixture_id": &fixture_id
-        })
+        .count_documents(doc! { "fixtureId": &fixture_id })
         .await? as i64;
 
     let home_comments = comment_collection
         .count_documents(doc! {
-            "fixture_id": &fixture_id,
+            "fixtureId": &fixture_id,
             "selection": "home_team"
         })
         .await? as i64;
 
     let draw_comments = comment_collection
         .count_documents(doc! {
-            "fixture_id": &fixture_id,
+            "fixtureId": &fixture_id,
             "selection": "draw"
         })
         .await? as i64;
 
     let away_comments = comment_collection
         .count_documents(doc! {
-            "fixture_id": &fixture_id,
+            "fixtureId": &fixture_id,
             "selection": "away_team"
         })
         .await? as i64;
@@ -2055,64 +2105,6 @@ pub async fn get_realtime_vote_updates(
     Ok(Json(response))
 }
 
-pub async fn get_vote_counts_by_selection(
-    State(state): State<AppState>,
-    Path(fixture_id): Path<String>,
-) -> Result<Json<serde_json::Value>> {
-    println!(
-        "📊 Getting vote counts by selection for fixture: {}",
-        fixture_id
-    );
-
-    let collection: Collection<Vote> = state.db.collection("votes");
-
-    let home_votes = collection
-        .count_documents(doc! {
-            "fixture_id": &fixture_id,
-            "selection": "home_team"
-        })
-        .await? as i64;
-
-    let draw_votes = collection
-        .count_documents(doc! {
-            "fixture_id": &fixture_id,
-            "selection": "draw"
-        })
-        .await? as i64;
-
-    let away_votes = collection
-        .count_documents(doc! {
-            "fixture_id": &fixture_id,
-            "selection": "away_team"
-        })
-        .await? as i64;
-
-    let total_votes = home_votes + draw_votes + away_votes;
-
-    let response = json!({
-        "success": true,
-        "fixture_id": fixture_id,
-        "vote_counts": {
-            "home_team": home_votes,
-            "draw": draw_votes,
-            "away_team": away_votes,
-            "total": total_votes
-        },
-        "percentages": {
-            "home": if total_votes > 0 { (home_votes as f64 / total_votes as f64) * 100.0 } else { 0.0 },
-            "draw": if total_votes > 0 { (draw_votes as f64 / total_votes as f64) * 100.0 } else { 0.0 },
-            "away": if total_votes > 0 { (away_votes as f64 / total_votes as f64) * 100.0 } else { 0.0 }
-        },
-        "timestamp": Utc::now().to_rfc3339()
-    });
-
-    println!(
-        "✅ Vote counts by selection for fixture {}: H:{} D:{} A:{}",
-        fixture_id, home_votes, draw_votes, away_votes
-    );
-    Ok(Json(response))
-}
-
 pub async fn get_comment_counts_by_selection(
     State(state): State<AppState>,
     Path(fixture_id): Path<String>,
@@ -2126,21 +2118,21 @@ pub async fn get_comment_counts_by_selection(
 
     let home_comments = collection
         .count_documents(doc! {
-            "fixture_id": &fixture_id,
+            "fixtureId": &fixture_id,
             "selection": "home_team"
         })
         .await? as i64;
 
     let draw_comments = collection
         .count_documents(doc! {
-            "fixture_id": &fixture_id,
+            "fixtureId": &fixture_id,
             "selection": "draw"
         })
         .await? as i64;
 
     let away_comments = collection
         .count_documents(doc! {
-            "fixture_id": &fixture_id,
+            "fixtureId": &fixture_id,
             "selection": "away_team"
         })
         .await? as i64;
@@ -2179,9 +2171,9 @@ pub async fn get_fixture_engagement_summary(
 
     let vote_collection: Collection<Vote> = state.db.collection("votes");
     let like_collection: Collection<Like> = state.db.collection("likes");
-    let comment_collection: Collection<Comment> = state.db.collection("comments");
+    let comment_collection: Collection<Comment> = state.db.collection("room");
 
-    let vote_filter = doc! { "fixture_id": &fixture_id };
+    let vote_filter = doc! { "fixtureId": &fixture_id };
     let total_votes = vote_collection.count_documents(vote_filter.clone()).await? as i64;
     let total_likes = like_collection.count_documents(vote_filter.clone()).await? as i64;
     let total_comments = comment_collection
@@ -2191,42 +2183,42 @@ pub async fn get_fixture_engagement_summary(
 
     let home_votes = vote_collection
         .count_documents(doc! {
-            "fixture_id": &fixture_id,
+            "fixtureId": &fixture_id,
             "selection": "home_team"
         })
         .await? as i64;
 
     let draw_votes = vote_collection
         .count_documents(doc! {
-            "fixture_id": &fixture_id,
+            "fixtureId": &fixture_id,
             "selection": "draw"
         })
         .await? as i64;
 
     let away_votes = vote_collection
         .count_documents(doc! {
-            "fixture_id": &fixture_id,
+            "fixtureId": &fixture_id,
             "selection": "away_team"
         })
         .await? as i64;
 
     let home_comments = comment_collection
         .count_documents(doc! {
-            "fixture_id": &fixture_id,
+            "fixtureId": &fixture_id,
             "selection": "home_team"
         })
         .await? as i64;
 
     let draw_comments = comment_collection
         .count_documents(doc! {
-            "fixture_id": &fixture_id,
+            "fixtureId": &fixture_id,
             "selection": "draw"
         })
         .await? as i64;
 
     let away_comments = comment_collection
         .count_documents(doc! {
-            "fixture_id": &fixture_id,
+            "fixtureId": &fixture_id,
             "selection": "away_team"
         })
         .await? as i64;
