@@ -584,14 +584,18 @@ pub async fn get_user_unread_counts(
 // ========== FIXED: get_user_votes ==========
 pub async fn get_user_votes(
     State(state): State<AppState>,
-    Path(voter_id): Path<String>,
+    Path(identifier): Path<String>,
 ) -> Result<Json<Vec<Vote>>> {
-    println!("🔍 Getting votes for user: {}", voter_id);
+    println!("🔍 Getting votes for identifier: {}", identifier);
 
     let collection: Collection<Vote> = state.db.collection("votes");
 
-    // Use camelCase field names to match serde rename
-    let filter = doc! { "voterId": voter_id };
+    // Try as ObjectId first, if fails use as username
+    let filter = if let Ok(oid) = ObjectId::parse_str(&identifier) {
+        doc! { "voterId": oid }
+    } else {
+        doc! { "username": &identifier }
+    };
 
     let options = FindOptions::builder()
         .sort(doc! { "voteTimestamp": -1 })
@@ -600,7 +604,11 @@ pub async fn get_user_votes(
     let cursor = collection.find(filter).with_options(options).await?;
     let votes: Vec<Vote> = cursor.try_collect().await?;
 
-    println!("✅ Found {} votes for user", votes.len());
+    println!(
+        "✅ Found {} votes for identifier: {}",
+        votes.len(),
+        identifier
+    );
     Ok(Json(votes))
 }
 
