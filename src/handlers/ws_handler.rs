@@ -883,54 +883,60 @@ async fn save_comment_to_database(state: &AppState, payload: &Value) -> Result<(
 }
 
 // ========== FULL: delete_comment_from_database ==========
+
 async fn delete_comment_from_database(state: &AppState, message_id: &str) -> Result<(), String> {
     let collection: mongodb::Collection<Comment> = state.db.collection("room");
 
-    // ✅ Step 1: Try by Flutter messageId field first (most reliable)
+    // Try by Flutter messageId field
     let by_message_id_filter = doc! { "messageId": message_id };
     let comment_by_msg_id = collection
         .find_one(by_message_id_filter.clone())
         .await
-        .unwrap_or(None);
+        .map_err(|e| format!("Database error: {}", e))?;
 
     if let Some(comment) = comment_by_msg_id {
         let fixture_id = comment.fixture_id.clone();
 
-        match collection.delete_one(by_message_id_filter).await {
-            Ok(result) if result.deleted_count > 0 => {
-                tracing::info!("✅ Deleted by messageId field: {}", message_id);
-                decrement_game_comment_count(state, &fixture_id).await;
-                return Ok(());
-            }
-            _ => {}
+        let result = collection
+            .delete_one(by_message_id_filter)
+            .await
+            .map_err(|e| format!("Delete failed: {}", e))?;
+
+        if result.deleted_count > 0 {
+            tracing::info!("✅ Deleted by messageId field: {}", message_id);
+            decrement_game_comment_count(state, &fixture_id).await;
+            return Ok(());
         }
     }
 
-    // ✅ Step 2: Try by MongoDB _id
+    // Try by MongoDB _id
     if let Ok(oid) = ObjectId::parse_str(message_id) {
         let by_oid_filter = doc! { "_id": oid };
         let comment_by_oid = collection
             .find_one(by_oid_filter.clone())
             .await
-            .unwrap_or(None);
+            .map_err(|e| format!("Database error: {}", e))?;
 
         if let Some(comment) = comment_by_oid {
             let fixture_id = comment.fixture_id.clone();
 
-            match collection.delete_one(by_oid_filter).await {
-                Ok(result) if result.deleted_count > 0 => {
-                    tracing::info!("✅ Deleted by _id: {}", message_id);
-                    decrement_game_comment_count(state, &fixture_id).await;
-                    return Ok(());
-                }
-                _ => {}
+            let result = collection
+                .delete_one(by_oid_filter)
+                .await
+                .map_err(|e| format!("Delete failed: {}", e))?;
+
+            if result.deleted_count > 0 {
+                tracing::info!("✅ Deleted by _id: {}", message_id);
+                decrement_game_comment_count(state, &fixture_id).await;
+                return Ok(());
             }
         }
     }
 
-    tracing::warn!("⚠️ Comment not found for deletion: {}", message_id);
-    // Return Ok so we don't block the broadcast — it may already be gone
-    Ok(())
+    // ❌ Now return an error so the client knows deletion failed
+    let error_msg = format!("❌ Comment not found for deletion: {}", message_id);
+    tracing::error!("{}", error_msg);
+    Err(error_msg)
 }
 
 // ========== HELPER: decrement_game_comment_count ==========
