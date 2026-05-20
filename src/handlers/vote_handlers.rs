@@ -603,15 +603,16 @@ pub async fn get_user_votes(
     for game in games {
         for voter in game.voters {
             if voter.user_id == user_id {
+                // ✅ Clone the strings to avoid moving
                 let vote = Vote {
                     id: None,
-                    voter_id: voter.user_id,
-                    username: voter.user_name,
-                    fixture_id: game.match_id,
-                    home_team: game.home_team,
-                    away_team: game.away_team,
+                    voter_id: voter.user_id.clone(),
+                    username: voter.user_name.clone(),
+                    fixture_id: game.match_id.clone(),
+                    home_team: game.home_team.clone(),
+                    away_team: game.away_team.clone(),
                     draw: "draw".to_string(),
-                    selection: voter.selection,
+                    selection: voter.selection.clone(),
                     vote_timestamp: voter.voted_at,
                     created_at: Some(voter.voted_at),
                 };
