@@ -1219,11 +1219,15 @@ pub async fn create_comment(
     let payload_clone = payload.clone();
     let comment_text = payload.comment.clone();
     let fixture_name = format!("{} vs {}", home_team, away_team);
-    let short_comment = if comment_text.len() > 50 {
-        format!("{}...", &comment_text[0..50])
+
+    // ✅ FIXED: Safe Unicode/emoji truncation - counts characters, not bytes
+    let short_comment = if comment_text.chars().count() > 50 {
+        let truncated: String = comment_text.chars().take(50).collect();
+        format!("{}...", truncated)
     } else {
         comment_text.clone()
     };
+
     let commenter_name = payload_clone.username.clone();
     let has_image = payload_clone.is_image;
     let has_video = payload_clone.is_video;
@@ -1364,38 +1368,6 @@ pub async fn create_comment(
         comment_id: Some(comment_id),
         comment: Some(inserted_comment),
     }))
-}
-
-pub async fn get_comments(
-    State(state): State<AppState>,
-    Query(query): Query<CommentQuery>,
-) -> Result<Json<Vec<Comment>>> {
-    println!("🔍 Getting comments...");
-
-    let collection: Collection<Comment> = state.db.collection("room");
-    let mut filter = doc! {};
-
-    if let Some(fixture_id) = &query.fixture_id {
-        filter.insert("fixtureId", fixture_id);
-    }
-
-    if let Some(voter_id) = &query.voter_id {
-        filter.insert("voterId", voter_id);
-    }
-
-    if let Some(selection) = &query.selection {
-        filter.insert("selection", selection);
-    }
-
-    let options = FindOptions::builder()
-        .sort(doc! { "commentTimestamp": -1 })
-        .build();
-
-    let cursor = collection.find(filter).with_options(options).await?;
-    let comments: Vec<Comment> = cursor.try_collect().await?;
-
-    println!("✅ Found {} comments", comments.len());
-    Ok(Json(comments))
 }
 
 pub async fn get_fixture_comments(

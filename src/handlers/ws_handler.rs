@@ -437,8 +437,6 @@ async fn handle_socket(
     tracing::info!("🔌 WS disconnected for fixture: {}", fixture_id);
 }
 
-// ========== HANDLE INCOMING MESSAGES ==========
-// ========== HANDLE INCOMING MESSAGES ==========
 async fn handle_incoming_message(
     text: String,
     state: &AppState,
@@ -451,7 +449,7 @@ async fn handle_incoming_message(
         let message_type = json_msg.get("type").and_then(|t| t.as_str());
 
         match message_type {
-            // ========== HANDLE CHAT.MESSAGE ==========
+            // ========== SINGLE SOURCE OF TRUTH: chat.message ==========
             Some("chat.message") => {
                 if let Some(payload) = json_msg.get("payload") {
                     let payload_clone = payload.clone();
@@ -466,18 +464,17 @@ async fn handle_incoming_message(
                         fixture_id_from_payload
                     );
 
-                    // ✅ STEP 1: Save comment to database FIRST
+                    // ✅ STEP 1: Save to database
                     if let Err(e) = save_comment_to_database(state, payload).await {
                         tracing::error!("Failed to save comment: {}", e);
                         return;
                     }
 
-                    // ✅ STEP 2: Get accurate count AFTER saving
+                    // ✅ STEP 2: Get updated comment count
                     let total_comments = get_comment_count(state, fixture_id_from_payload).await;
-
                     tracing::info!("📊 Total comments after save: {}", total_comments);
 
-                    // ✅ STEP 3: Broadcast chat.message
+                    // ✅ STEP 3: Broadcast chat.message to ALL clients
                     let broadcast_msg = serde_json::json!({
                         "type": "chat.message",
                         "payload": payload_clone,
@@ -486,9 +483,10 @@ async fn handle_incoming_message(
 
                     if let Ok(broadcast_json) = serde_json::to_string(&broadcast_msg) {
                         let _ = broadcaster.send(broadcast_json);
+                        tracing::info!("📡 Broadcasted chat.message");
                     }
 
-                    // ✅ STEP 4: Broadcast comment.count with CORRECT count
+                    // ✅ STEP 4: Broadcast comment.count
                     let comment_count_msg = serde_json::json!({
                         "type": "comment.count",
                         "payload": {
@@ -505,7 +503,7 @@ async fn handle_incoming_message(
                 }
             }
 
-            // ========== HANDLE MESSAGE.DELETE (NEW) ==========
+            // ========== MESSAGE DELETE ==========
             Some("message.delete") => {
                 if let Some(payload) = json_msg.get("payload") {
                     let message_id = payload
@@ -517,23 +515,15 @@ async fn handle_incoming_message(
                         .and_then(|v| v.as_str())
                         .unwrap_or(fixture_id);
 
-                    tracing::info!(
-                        "📨 Received message.delete for message: {} in fixture: {} from user: {}",
-                        message_id,
-                        fixture_id_from_payload,
-                        user_id
-                    );
+                    tracing::info!("📨 Received message.delete: {}", message_id);
 
-                    // ✅ Delete from database
                     if let Err(e) = delete_comment_from_database(state, message_id).await {
-                        tracing::error!("Failed to delete comment from database: {}", e);
+                        tracing::error!("Failed to delete: {}", e);
                         return;
                     }
 
-                    // ✅ Get updated count after deletion
                     let total_comments = get_comment_count(state, fixture_id_from_payload).await;
 
-                    // ✅ Broadcast delete to all clients in the room
                     let delete_msg = serde_json::json!({
                         "type": "message.delete",
                         "payload": {
@@ -546,10 +536,8 @@ async fn handle_incoming_message(
 
                     if let Ok(delete_json) = serde_json::to_string(&delete_msg) {
                         let _ = broadcaster.send(delete_json);
-                        tracing::info!("📡 Broadcasted message.delete for: {}", message_id);
                     }
 
-                    // ✅ Broadcast updated comment count
                     let comment_count_msg = serde_json::json!({
                         "type": "comment.count",
                         "payload": {
@@ -561,169 +549,66 @@ async fn handle_incoming_message(
 
                     if let Ok(count_json) = serde_json::to_string(&comment_count_msg) {
                         let _ = broadcaster.send(count_json);
-                        tracing::info!(
-                            "📡 Broadcasted comment.count after delete: {}",
-                            total_comments
-                        );
                     }
                 }
             }
 
-            // ========== HANDLE ROOM.MESSAGE ==========
-            Some("room.message") => {
-                if let Some(payload) = json_msg.get("payload") {
-                    let payload_clone = payload.clone();
-                    let fixture_id_from_payload = payload
-                        .get("roomId")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or(fixture_id);
-
-                    tracing::info!(
-                        "📨 Received room.message from user {} in fixture {}",
-                        user_id,
-                        fixture_id_from_payload
-                    );
-
-                    let broadcast_msg = serde_json::json!({
-                        "type": "room.message",
-                        "payload": payload_clone,
-                        "timestamp": Utc::now().to_rfc3339(),
-                    });
-
-                    if let Ok(broadcast_json) = serde_json::to_string(&broadcast_msg) {
-                        let _ = broadcaster.send(broadcast_json);
-                        tracing::info!(
-                            "📡 Broadcasted room.message for fixture: {}",
-                            fixture_id_from_payload
-                        );
-                    }
-                }
-            }
-
-            // ========== HANDLE VOTE.UPDATE ==========
+            // ========== VOTE UPDATE ==========
             Some("vote.update") => {
                 if let Some(payload) = json_msg.get("payload") {
                     let payload_clone = payload.clone();
-                    let fixture_id_from_payload = payload
-                        .get("fixtureId")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or(fixture_id);
-
-                    tracing::info!(
-                        "📨 Received vote.update from user {} in fixture {}",
-                        user_id,
-                        fixture_id_from_payload
-                    );
-
                     let broadcast_msg = serde_json::json!({
                         "type": "vote.update",
                         "payload": payload_clone,
                         "timestamp": Utc::now().to_rfc3339(),
                     });
-
                     if let Ok(broadcast_json) = serde_json::to_string(&broadcast_msg) {
                         let _ = broadcaster.send(broadcast_json);
-                        tracing::info!(
-                            "📡 Broadcasted vote.update for fixture: {}",
-                            fixture_id_from_payload
-                        );
                     }
                 }
             }
 
-            // ========== HANDLE LIKE ==========
+            // ========== LIKE ==========
             Some("like") => {
                 if let Some(payload) = json_msg.get("payload") {
                     let payload_clone = payload.clone();
-                    let fixture_id_from_payload = payload
-                        .get("fixtureId")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or(fixture_id);
-
-                    tracing::info!(
-                        "📨 Received like from user {} in fixture {}",
-                        user_id,
-                        fixture_id_from_payload
-                    );
-
                     let broadcast_msg = serde_json::json!({
                         "type": "like",
                         "payload": payload_clone,
                         "timestamp": Utc::now().to_rfc3339(),
                     });
-
                     if let Ok(broadcast_json) = serde_json::to_string(&broadcast_msg) {
                         let _ = broadcaster.send(broadcast_json);
-                        tracing::info!(
-                            "📡 Broadcasted like for fixture: {}",
-                            fixture_id_from_payload
-                        );
                     }
                 }
             }
 
-            // ========== HANDLE TYPING ==========
+            // ========== TYPING ==========
             Some("typing") => {
                 if let Some(payload) = json_msg.get("payload") {
                     let payload_clone = payload.clone();
-
                     let broadcast_msg = serde_json::json!({
                         "type": "typing",
                         "payload": payload_clone,
                         "timestamp": Utc::now().to_rfc3339(),
                     });
-
                     if let Ok(broadcast_json) = serde_json::to_string(&broadcast_msg) {
                         let _ = broadcaster.send(broadcast_json);
                     }
                 }
             }
 
-            // ========== HANDLE COMMENT.SEEN ==========
-            Some("comment.seen") => {
-                if let Some(payload) = json_msg.get("payload") {
-                    let payload_clone = payload.clone();
-
-                    let broadcast_msg = serde_json::json!({
-                        "type": "comment.seen",
-                        "payload": payload_clone,
-                        "timestamp": Utc::now().to_rfc3339(),
-                    });
-
-                    if let Ok(broadcast_json) = serde_json::to_string(&broadcast_msg) {
-                        let _ = broadcaster.send(broadcast_json);
-                    }
-                }
-            }
-
-            // ========== HANDLE PRESENCE ==========
-            Some("presence") => {
-                if let Some(payload) = json_msg.get("payload") {
-                    let payload_clone = payload.clone();
-
-                    let broadcast_msg = serde_json::json!({
-                        "type": "presence",
-                        "payload": payload_clone,
-                        "timestamp": Utc::now().to_rfc3339(),
-                    });
-
-                    if let Ok(broadcast_json) = serde_json::to_string(&broadcast_msg) {
-                        let _ = broadcaster.send(broadcast_json);
-                    }
-                }
-            }
-
-            // ========== HANDLE ROOM.JOIN ==========
+            // ========== ROOM.JOIN ==========
             Some("room.join") => {
                 tracing::info!("User {} joined room for fixture {}", user_id, fixture_id);
             }
 
-            // ========== HANDLE ROOM.LEAVE ==========
+            // ========== ROOM.LEAVE ==========
             Some("room.leave") => {
                 tracing::info!("User {} left room for fixture {}", user_id, fixture_id);
             }
 
-            // ========== HANDLE PING ==========
+            // ========== PING ==========
             Some("ping") => {
                 let pong = serde_json::json!({
                     "type": "pong",
@@ -734,13 +619,21 @@ async fn handle_incoming_message(
                 }
             }
 
-            // ========== UNKNOWN MESSAGE TYPE ==========
+            // ========== IGNORE room.message ==========
+            Some("room.message") => {
+                tracing::debug!("Ignoring room.message - use chat.message instead");
+            }
+
             _ => {
                 tracing::debug!("Unknown message type: {:?}", message_type);
             }
         }
     }
 }
+
+// ========== HANDLE INCOMING MESSAGES ==========
+// ========== HANDLE INCOMING MESSAGES ==========
+
 // ========== HELPER FUNCTION TO DELETE COMMENT FROM DATABASE ==========
 // ========== FULL: save_comment_to_database ==========
 async fn save_comment_to_database(state: &AppState, payload: &Value) -> Result<(), String> {
