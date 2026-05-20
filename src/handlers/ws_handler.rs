@@ -75,11 +75,7 @@ pub enum WSMessage {
         payload: LikePayload,
         timestamp: String,
     },
-    #[serde(rename = "room.message")]
-    RoomMessage {
-        payload: RoomMessagePayload,
-        timestamp: String,
-    },
+
     #[serde(rename = "match.goal")]
     MatchGoal {
         payload: GoalPayload,
@@ -617,11 +613,6 @@ async fn handle_incoming_message(
                 if let Ok(pong_json) = serde_json::to_string(&pong) {
                     let _ = broadcaster.send(pong_json);
                 }
-            }
-
-            // ========== IGNORE room.message ==========
-            Some("room.message") => {
-                tracing::debug!("Ignoring room.message - use chat.message instead");
             }
 
             _ => {
