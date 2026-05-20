@@ -162,6 +162,13 @@ pub async fn upload_chat_media(
     }
 }
 
+pub async fn get_comments(
+    State(state): State<AppState>,
+    Path(fixture_id): Path<String>,
+) -> Result<Json<CommentStats>> {
+    get_fixture_comments(State(state), Path(fixture_id)).await
+}
+
 pub async fn mark_comments_seen(
     State(state): State<AppState>,
     Json(payload): Json<MarkCommentsSeenRequest>,
