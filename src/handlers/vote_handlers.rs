@@ -586,15 +586,35 @@ pub async fn get_user_votes(
     State(state): State<AppState>,
     Path(user_id): Path<String>,
 ) -> Result<Json<Vec<Vote>>> {
-    println!(
-        "🔍 Getting votes for user: {} from games collection",
-        user_id
-    );
+    println!("🔍 Looking for user_id: '{}'", user_id);
 
     let games_collection: Collection<Game> = state.db.collection("games");
 
-    // Query for games where this user exists in the voters array
+    // First, let's see all games with voters
+    let all_games_with_voters = games_collection
+        .find(doc! { "voters": { "$exists": true, "$ne": [] } })
+        .await?;
+    let games_list: Vec<Game> = all_games_with_voters.try_collect().await?;
+    println!("📊 Total games with voters: {}", games_list.len());
+
+    for game in &games_list {
+        println!(
+            "  Game: {} vs {}, voters count: {}",
+            game.home_team,
+            game.away_team,
+            game.voters.len()
+        );
+        for voter in &game.voters {
+            println!(
+                "    Voter: userId='{}', userName='{}'",
+                voter.user_id, voter.user_name
+            );
+        }
+    }
+
+    // Now query for specific user
     let filter = doc! { "voters.userId": &user_id };
+    println!("🔍 Query filter: {:?}", filter);
 
     let cursor = games_collection.find(filter).await?;
     let games: Vec<Game> = cursor.try_collect().await?;
@@ -628,13 +648,9 @@ pub async fn get_user_votes(
         }
     }
 
-    println!(
-        "✅ Returning {} votes for user from games collection",
-        votes.len()
-    );
+    println!("✅ Returning {} votes for user", votes.len());
     Ok(Json(votes))
 }
-
 pub async fn get_fixture_votes(
     State(state): State<AppState>,
     Path(fixture_id): Path<String>,
