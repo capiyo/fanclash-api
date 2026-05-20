@@ -584,34 +584,48 @@ pub async fn get_user_unread_counts(
 // ========== FIXED: get_user_votes ==========
 pub async fn get_user_votes(
     State(state): State<AppState>,
-    Path(identifier): Path<String>,
+    Path(user_id): Path<String>,
 ) -> Result<Json<Vec<Vote>>> {
-    println!("🔍 Getting votes for identifier: {}", identifier);
+    println!(
+        "🔍 Getting votes for user: {} from games collection",
+        user_id
+    );
 
-    let collection: Collection<Vote> = state.db.collection("votes");
+    let games_collection: Collection<Game> = state.db.collection("games");
 
-    // Try as ObjectId first, if fails use as username
-    let filter = if let Ok(oid) = ObjectId::parse_str(&identifier) {
-        doc! { "voterId": oid }
-    } else {
-        doc! { "username": &identifier }
-    };
+    // Find all games where this user appears in voters array
+    let filter = doc! { "voters.userId": &user_id };
+    let cursor = games_collection.find(filter).await?;
+    let games: Vec<Game> = cursor.try_collect().await?;
 
-    let options = FindOptions::builder()
-        .sort(doc! { "voteTimestamp": -1 })
-        .build();
+    let mut votes = Vec::new();
 
-    let cursor = collection.find(filter).with_options(options).await?;
-    let votes: Vec<Vote> = cursor.try_collect().await?;
+    for game in games {
+        for voter in game.voters {
+            if voter.user_id == user_id {
+                let vote = Vote {
+                    id: None,
+                    voter_id: voter.user_id,
+                    username: voter.user_name,
+                    fixture_id: game.match_id,
+                    home_team: game.home_team,
+                    away_team: game.away_team,
+                    draw: "draw".to_string(),
+                    selection: voter.selection,
+                    vote_timestamp: voter.voted_at,
+                    created_at: Some(voter.voted_at),
+                };
+                votes.push(vote);
+            }
+        }
+    }
 
     println!(
-        "✅ Found {} votes for identifier: {}",
-        votes.len(),
-        identifier
+        "✅ Found {} votes for user from games collection",
+        votes.len()
     );
     Ok(Json(votes))
 }
-
 // ========== FIXED: get_fixture_votes ==========
 pub async fn get_fixture_votes(
     State(state): State<AppState>,
